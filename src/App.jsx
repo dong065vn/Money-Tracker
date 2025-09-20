@@ -76,7 +76,7 @@ function UISelect({ label, value, onChange, children }) {
 /* ===== App ===== */
 export default function App() {
   const palette = useMemo(
-    () => ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#22c55e"],
+    () => ["#3b82f6", "#10b981", "#3ae61cff", "#c409c0ff", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#22c55e"],
     []
   );
 
