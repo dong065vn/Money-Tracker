@@ -76,7 +76,7 @@ function UISelect({ label, value, onChange, children }) {
 /* ===== App ===== */
 export default function App() {
   const palette = useMemo(
-    () => ["#3b82f6", "#10b981", "#57d30bff", "#b4116dff", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#22c55e"],
+    () => ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#22c55e"],
     []
   );
 
@@ -105,14 +105,20 @@ export default function App() {
   });
 
   const [nameInput, setNameInput] = useState("");
-  const [tx, setTx] = useState({ type: "expense", amount: "", title: "", payerId: 1 });
+  const [tx, setTx] = useState({ type: "expense", amount: "", title: "", payerId: 1, participants: [] });
   const [query, setQuery] = useState("");
+  const [exportMemberId, setExportMemberId] = useState(0);
 
   useEffect(() => localStorage.setItem("mt_members", JSON.stringify(members)), [members]);
   useEffect(() => localStorage.setItem("mt_tx", JSON.stringify(transactions)), [transactions]);
 
   const memberName = (id) => members.find((m) => m.id === id)?.name || "---";
   const memberIds = useMemo(() => members.map((m) => m.id), [members]);
+
+  // Ensure new-transaction participants default to all current members
+  useEffect(() => {
+    setTx((p) => ({ ...p, participants: p.participants?.length ? p.participants : memberIds }));
+  }, [memberIds]);
 
   const nfCurrency = useMemo(() => new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }), []);
   const nfNumber = useMemo(() => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }), []);
@@ -138,9 +144,10 @@ export default function App() {
         ...t,
         payerId: t.payerId === id ? nextIds[0] ?? t.payerId : t.payerId,
         paid: (t.paid || []).filter((p) => p !== id),
+        participants: (t.participants || memberIds).filter((p) => p !== id),
       }))
     );
-    setTx((p) => ({ ...p, payerId: p.payerId === id ? nextIds[0] ?? 0 : p.payerId }));
+    setTx((p) => ({ ...p, payerId: p.payerId === id ? nextIds[0] ?? 0 : p.payerId, participants: (p.participants || []).filter((pid) => pid !== id) }));
   };
 
   const parseAmount = (val) => {
@@ -161,6 +168,7 @@ export default function App() {
       alert("Điền tiêu đề, số tiền (>0) và người trả.");
       return;
     }
+    const parts = (tx.participants && tx.participants.length) ? tx.participants : memberIds;
     const newTx = {
       id: Date.now(),
       type: tx.type,
@@ -168,10 +176,11 @@ export default function App() {
       amount,
       payerId: tx.payerId,
       paid: [],
+      participants: parts,
       date: new Date().toISOString(),
     };
     setTransactions((p) => [newTx, ...p]);
-    setTx((p) => ({ ...p, title: "", amount: "" }));
+    setTx((p) => ({ ...p, title: "", amount: "", participants: memberIds }));
   };
 
   const removeTransaction = (id) => {
@@ -184,11 +193,38 @@ export default function App() {
       prev.map((t) => {
         if (t.id !== txId) return t;
         if (memberId === t.payerId) return t;
+        const participants = (t.participants && t.participants.length) ? t.participants : memberIds;
+        if (!participants.includes(memberId)) return t;
         const paid = new Set(t.paid || []);
         paid.has(memberId) ? paid.delete(memberId) : paid.add(memberId);
         return { ...t, paid: [...paid] };
       })
     );
+  };
+
+  const toggleParticipantInTx = (txId, memberId) => {
+    setTransactions((prev) =>
+      prev.map((t) => {
+        if (t.id !== txId) return t;
+        let participants = (t.participants && t.participants.length) ? [...t.participants] : [...memberIds];
+        if (participants.includes(memberId)) {
+          participants = participants.filter((p) => p !== memberId);
+        } else {
+          participants.push(memberId);
+        }
+        const paid = (t.paid || []).filter((p) => participants.includes(p));
+        const payerId = participants.includes(t.payerId) ? t.payerId : participants[0] ?? t.payerId;
+        return { ...t, participants, paid, payerId };
+      })
+    );
+  };
+
+  const toggleParticipantInDraft = (memberId) => {
+    setTx((prev) => {
+      const set = new Set(prev.participants?.length ? prev.participants : memberIds);
+      set.has(memberId) ? set.delete(memberId) : set.add(memberId);
+      return { ...prev, participants: [...set] };
+    });
   };
 
   const clearAll = () => {
@@ -197,22 +233,34 @@ export default function App() {
     setMembers([]);
   };
 
-  /* ===== Core math: chia đều theo tổng số người tham gia ===== */
+  /* ===== Core math: chia theo người tham gia của từng giao dịch ===== */
   const balances = useMemo(() => {
     const map = new Map(members.map((m) => [m.id, 0]));
     const ids = members.map((m) => m.id);
 
     for (const t of transactions) {
       const payer = t.payerId;
-      const parts = Math.max(1, ids.length);
+      const participants = (t.participants && t.participants.length)
+        ? t.participants.filter((id) => ids.includes(id))
+        : [...ids];
+      const parts = Math.max(1, participants.length);
       const share = Math.round(t.amount / parts);
+      const paidSet = new Set((t.paid || []).filter((p) => participants.includes(p) && p !== payer));
 
       if (t.type === "expense") {
         map.set(payer, (map.get(payer) || 0) + t.amount);
-        for (const p of ids) map.set(p, (map.get(p) || 0) - share);
+        for (const p of participants) map.set(p, (map.get(p) || 0) - share);
+        for (const p of paidSet) {
+          map.set(p, (map.get(p) || 0) + share);
+          map.set(payer, (map.get(payer) || 0) - share);
+        }
       } else {
         map.set(payer, (map.get(payer) || 0) - t.amount);
-        for (const p of ids) map.set(p, (map.get(p) || 0) + share);
+        for (const p of participants) map.set(p, (map.get(p) || 0) + share);
+        for (const p of paidSet) {
+          map.set(p, (map.get(p) || 0) - share);
+          map.set(payer, (map.get(payer) || 0) + share);
+        }
       }
     }
     return Object.fromEntries(map);
@@ -275,12 +323,12 @@ export default function App() {
   }, [members, transactions, balances]);
 
   const exportCSV = () => {
-    const rows = [["Type", "Title", "Amount(VND)", "Payer", "Members", "Paid", "Date"]];
+    const rows = [["Type", "Title", "Amount(VND)", "Payer", "Participants", "Paid", "Date"]];
     for (const t of transactions) {
       const payer = memberName(t.payerId);
-      const membersList = memberIds.map((id) => memberName(id)).join("; ");
+      const participants = (t.participants && t.participants.length ? t.participants : memberIds).map((id) => memberName(id)).join("; ");
       const paid = (t.paid || []).map((id) => memberName(id)).join("; ");
-      rows.push([t.type, t.title, t.amount, payer, membersList, paid, new Date(t.date).toLocaleString("vi-VN")]);
+      rows.push([t.type, t.title, t.amount, payer, participants, paid, new Date(t.date).toLocaleString("vi-VN")]);
     }
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -288,6 +336,27 @@ export default function App() {
     const a = document.createElement("a");
     a.href = url;
     a.download = "moneytracker_transactions.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportPersonalCSV = (memberId) => {
+    if (!memberId) return;
+    const rows = [["Member", "Type", "Title", "Total(VND)", "Share(VND)", "IsPayer", "Date"]];
+    for (const t of transactions) {
+      const participants = (t.participants && t.participants.length ? t.participants : memberIds);
+      if (!participants.includes(memberId)) continue;
+      const parts = Math.max(1, participants.length);
+      const share = Math.round(t.amount / parts);
+      const isPayer = t.payerId === memberId ? "Y" : "N";
+      rows.push([memberName(memberId), t.type, t.title, t.amount, share, isPayer, new Date(t.date).toLocaleString("vi-VN")]);
+    }
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `personal_${memberName(memberId)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -344,19 +413,18 @@ export default function App() {
             </div>
           </div>
           <div className="hidden sm:flex items-center gap-2">
-            <UIButton variant="subtle" onClick={downloadJSON}>
-              Sao lưu
-            </UIButton>
+            <UIButton variant="subtle" onClick={downloadJSON}>Sao lưu</UIButton>
             <label className="inline-flex items-center rounded-2xl bg-slate-700 px-3.5 py-2.5 text-sm border border-slate-600 cursor-pointer">
               Import JSON
               <input type="file" accept="application/json" onChange={importJSON} className="hidden" />
             </label>
-            <UIButton variant="ghost" onClick={exportCSV}>
-              Export CSV
-            </UIButton>
-            <UIButton variant="danger" onClick={clearAll}>
-              Reset
-            </UIButton>
+            <UIButton variant="ghost" onClick={exportCSV}>Export CSV</UIButton>
+            <UISelect label="Cá nhân" value={exportMemberId} onChange={(e)=>setExportMemberId(Number(e.target.value))}>
+              <option value={0}>Chọn thành viên</option>
+              {members.map(m=> <option key={m.id} value={m.id}>{m.name}</option>)}
+            </UISelect>
+            <UIButton variant="ghost" onClick={()=>exportPersonalCSV(exportMemberId)}>Export cá nhân</UIButton>
+            <UIButton variant="danger" onClick={clearAll}>Reset</UIButton>
           </div>
         </div>
       </div>
@@ -409,6 +477,20 @@ export default function App() {
               </UISelect>
               <UIInput label="Tiêu đề" value={tx.title} onChange={(e) => setTx({ ...tx, title: e.target.value })} placeholder="Mua cafe, tiền điện..." />
             </div>
+            <div className="mt-3">
+              <div className="text-xs text-slate-400 mb-2">Thành viên tham gia</div>
+              <div className="flex flex-wrap gap-2">
+                {members.map((m) => {
+                  const checked = (tx.participants || memberIds).includes(m.id);
+                  return (
+                    <label key={m.id} className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${checked ? "bg-sky-500/10 border-sky-500 text-sky-300" : "bg-slate-800/80 border-slate-600 text-slate-300"}`}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleParticipantInDraft(m.id)} className="accent-sky-500" />
+                      {m.name}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
             <div className="mt-4 flex items-center justify-end">
               <UIButton onClick={addTransaction}>Thêm giao dịch</UIButton>
             </div>
@@ -423,48 +505,76 @@ export default function App() {
           >
             <div className="space-y-3">
               {txFiltered.length === 0 && <div className="text-sm text-slate-400 text-center py-6">Không có giao dịch</div>}
-              {txFiltered.map((t) => (
-                <div key={t.id} className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-slate-900/60 rounded-2xl p-3.5 border border-slate-700">
-                  <div className="md:col-span-7 flex items-center gap-3">
-                    <div
-                      className={`px-2.5 py-1 text-xs rounded-full border ${
-                        t.type === "income" ? "border-emerald-500 text-emerald-400" : "border-rose-500 text-rose-400"
-                      }`}
-                    >
-                      {t.type === "income" ? "Thu" : "Chi"}
+              {txFiltered.map((t) => {
+                const participants = (t.participants && t.participants.length ? t.participants : memberIds);
+                return (
+                  <div key={t.id} className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-slate-900/60 rounded-2xl p-3.5 border border-slate-700">
+                    <div className="md:col-span-7 flex items-center gap-3">
+                      <div
+                        className={`px-2.5 py-1 text-xs rounded-full border ${t.type === "income" ? "border-emerald-500 text-emerald-400" : "border-rose-500 text-rose-400"}`}
+                      >
+                        {t.type === "income" ? "Thu" : "Chi"}
+                      </div>
+                      <div className="font-medium truncate tracking-tight">{t.title}</div>
                     </div>
-                    <div className="font-medium truncate tracking-tight">{t.title}</div>
+                    <div className="md:col-span-3 text-slate-300 text-xs">
+                      {participants.map((id) => memberName(id)).join(", ")}
+                    </div>
+                    <div className="md:col-span-2 text-right font-semibold">{formatVND(t.amount)}</div>
+
+                    <div className="md:col-span-12 grid grid-cols-1 gap-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs text-slate-400">{new Date(t.date).toLocaleString("vi-VN")}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-400 mr-1">Payer:</span>
+                          <UISelect label=" " value={t.payerId} onChange={(e)=>setTransactions(prev=>prev.map(x=>x.id===t.id?{...x,payerId:Number(e.target.value)}:x))}>
+                            {participants.map((id)=> <option key={id} value={id}>{memberName(id)}</option>)}
+                          </UISelect>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Thành viên tham gia</div>
+                        <div className="flex flex-wrap gap-2">
+                          {memberIds.map((pid) => {
+                            const checked = participants.includes(pid);
+                            return (
+                              <label key={pid} className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${checked ? "bg-sky-500/10 border-sky-500 text-sky-300" : "bg-slate-800/80 border-slate-600 text-slate-300"}`}>
+                                <input type="checkbox" checked={checked} onChange={() => toggleParticipantInTx(t.id, pid)} className="accent-sky-500" />
+                                {memberName(pid)}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Đánh dấu đã trả</div>
+                        <div className="flex flex-wrap gap-2">
+                          {participants.filter((pid) => pid !== t.payerId).map((pid) => {
+                            const checked = (t.paid || []).includes(pid);
+                            return (
+                              <label
+                                key={pid}
+                                className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${
+                                  checked ? "bg-emerald-500/10 border-emerald-500 text-emerald-300" : "bg-slate-800/80 border-slate-600 text-slate-300"
+                                }`}
+                              >
+                                <input type="checkbox" checked={checked} onChange={() => togglePaid(t.id, pid)} className="accent-emerald-500" />
+                                {memberName(pid)}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-end">
+                        <UIButton variant="ghost" onClick={() => removeTransaction(t.id)}>Xóa</UIButton>
+                      </div>
+                    </div>
                   </div>
-                  <div className="md:col-span-3 text-slate-300 text-sm">{memberIds.map((id) => memberName(id)).join(", ")}</div>
-                  <div className="md:col-span-2 text-right font-semibold">{formatVND(t.amount)}</div>
-                  <div className="md:col-span-12 flex flex-wrap items-center gap-2 justify-between">
-                    <div className="text-xs text-slate-400">{new Date(t.date).toLocaleString("vi-VN")}</div>
-                    <div className="flex flex-wrap gap-2">
-                      {memberIds
-                        .filter((pid) => pid !== t.payerId)
-                        .map((pid) => {
-                          const checked = (t.paid || []).includes(pid);
-                          return (
-                            <label
-                              key={pid}
-                              className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${
-                                checked ? "bg-emerald-500/10 border-emerald-500 text-emerald-300" : "bg-slate-800/80 border-slate-600 text-slate-300"
-                              }`}
-                            >
-                              <input type="checkbox" checked={checked} onChange={() => togglePaid(t.id, pid)} className="accent-emerald-500" />
-                              {memberName(pid)}
-                            </label>
-                          );
-                        })}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <UIButton variant="ghost" onClick={() => removeTransaction(t.id)}>
-                        Xóa
-                      </UIButton>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </UICard>
 
