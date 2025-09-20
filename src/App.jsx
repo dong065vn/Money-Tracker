@@ -14,7 +14,40 @@ import {
   ReferenceLine,
 } from "recharts";
 
-/* ===== UI Primitives ===== */
+const SYNC_URL = import.meta.env.VITE_SYNC_URL;
+const SYNC_KEY = import.meta.env.VITE_SYNC_KEY;
+const SYNC_PULL_MS = Number(import.meta.env.VITE_SYNC_PULL_MS || 5000);
+
+async function pullRemote() {
+  if (!SYNC_URL) return null;
+  const res = await fetch(`${SYNC_URL}/api/state`);
+  if (!res.ok) throw new Error("pull failed");
+  const etag = res.headers.get("ETag");
+  const json = await res.json();
+  return { ...json, etag };
+}
+
+async function pushRemote(state, etag) {
+  if (!SYNC_URL) return null;
+  const res = await fetch(`${SYNC_URL}/api/state`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": SYNC_KEY || "",
+      "If-Match": etag ?? ""
+    },
+    body: JSON.stringify({ state })
+  });
+  if (res.status === 409) {
+    const data = await res.json();
+    return { conflict: true, current: data.current };
+  }
+  if (!res.ok) throw new Error("push failed");
+  const newEtag = res.headers.get("ETag");
+  const data = await res.json();
+  return { ...data, etag: newEtag };
+}
+
 function UIButton({ children, variant = "solid", onClick, className = "", type = "button" }) {
   const base =
     "inline-flex items-center justify-center rounded-2xl px-3.5 py-2.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-400 disabled:opacity-60 disabled:cursor-not-allowed";
@@ -73,10 +106,9 @@ function UISelect({ label, value, onChange, children }) {
   );
 }
 
-/* ===== App ===== */
 export default function App() {
   const palette = useMemo(
-    () => ["#3b82f6", "#10b981", "#3ae61cff", "#c409c0ff", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#22c55e"],
+    () => ["#3b82f6", "#10b981", "#3ae61c", "#c409c0", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#22c55e"],
     []
   );
 
@@ -104,6 +136,62 @@ export default function App() {
     }
   });
 
+  const [version, setVersion] = useState(0);
+  const [etag, setEtag] = useState(null);
+
+  const stateObj = useMemo(() => ({ members, transactions }), [members, transactions]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const remote = await pullRemote();
+        if (remote && remote.state) {
+          setMembers(remote.state.members ?? []);
+          setTransactions(remote.state.transactions ?? []);
+          setVersion(remote.version || 0);
+          setEtag(remote.etag || null);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
+    let to = setTimeout(async () => {
+      try {
+        const pushed = await pushRemote(stateObj, etag);
+        if (pushed?.conflict) {
+          const remote = await pullRemote();
+          if (remote?.state) {
+            setMembers(remote.state.members ?? []);
+            setTransactions(remote.state.transactions ?? []);
+            setVersion(remote.version || 0);
+            setEtag(remote.etag || null);
+          }
+        } else if (pushed?.etag) {
+          setVersion(pushed.version || version + 1);
+          setEtag(pushed.etag);
+        }
+      } catch {}
+    }, 400);
+    return () => clearTimeout(to);
+  }, [stateObj]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!SYNC_URL) return;
+    const t = setInterval(async () => {
+      try {
+        const remote = await pullRemote();
+        if (remote && remote.version > version) {
+          setMembers(remote.state.members ?? []);
+          setTransactions(remote.state.transactions ?? []);
+          setVersion(remote.version);
+          setEtag(remote.etag || null);
+        }
+      } catch {}
+    }, SYNC_PULL_MS);
+    return () => clearInterval(t);
+  }, [version]);
+
   const [nameInput, setNameInput] = useState("");
   const [tx, setTx] = useState({ type: "expense", amount: "", title: "", payerId: 1, participants: [] });
   const [query, setQuery] = useState("");
@@ -115,7 +203,6 @@ export default function App() {
   const memberName = (id) => members.find((m) => m.id === id)?.name || "---";
   const memberIds = useMemo(() => members.map((m) => m.id), [members]);
 
-  // Ensure new-transaction participants default to all current members
   useEffect(() => {
     setTx((p) => ({ ...p, participants: p.participants?.length ? p.participants : memberIds }));
   }, [memberIds]);
@@ -233,11 +320,9 @@ export default function App() {
     setMembers([]);
   };
 
-  /* ===== Core math: chia theo người tham gia của từng giao dịch ===== */
   const balances = useMemo(() => {
     const map = new Map(members.map((m) => [m.id, 0]));
     const ids = members.map((m) => m.id);
-
     for (const t of transactions) {
       const payer = t.payerId;
       const participants = (t.participants && t.participants.length)
@@ -246,7 +331,6 @@ export default function App() {
       const parts = Math.max(1, participants.length);
       const share = Math.round(t.amount / parts);
       const paidSet = new Set((t.paid || []).filter((p) => participants.includes(p) && p !== payer));
-
       if (t.type === "expense") {
         map.set(payer, (map.get(payer) || 0) + t.amount);
         for (const p of participants) map.set(p, (map.get(p) || 0) - share);
@@ -266,10 +350,8 @@ export default function App() {
     return Object.fromEntries(map);
   }, [members, transactions]);
 
-  /* ===== Charts data ===== */
   const totalsByType = useMemo(() => {
-    let income = 0,
-      expense = 0;
+    let income = 0, expense = 0;
     for (const t of transactions) {
       if (t.type === "income") income += t.amount;
       else expense += t.amount;
@@ -308,8 +390,7 @@ export default function App() {
 
   const avgPerMember = useMemo(() => {
     if (members.length === 0) return { avgBalance: 0, avgExpense: 0, avgIncome: 0 };
-    let totalExpense = 0,
-      totalIncome = 0;
+    let totalExpense = 0, totalIncome = 0;
     for (const t of transactions) {
       if (t.type === "income") totalIncome += t.amount;
       else totalExpense += t.amount;
@@ -402,7 +483,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100">
-      {/* Header */}
       <div className="sticky top-0 z-20 bg-slate-900/70 backdrop-blur border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -429,9 +509,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Content */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Members & Add Tx */}
         <div className="lg:col-span-1 space-y-6">
           <UICard
             title="Thành viên"
@@ -497,7 +575,6 @@ export default function App() {
           </UICard>
         </div>
 
-        {/* History + Analytics */}
         <div className="lg:col-span-2 space-y-6">
           <UICard
             title="Lịch sử"
@@ -510,9 +587,7 @@ export default function App() {
                 return (
                   <div key={t.id} className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-slate-900/60 rounded-2xl p-3.5 border border-slate-700">
                     <div className="md:col-span-7 flex items-center gap-3">
-                      <div
-                        className={`px-2.5 py-1 text-xs rounded-full border ${t.type === "income" ? "border-emerald-500 text-emerald-400" : "border-rose-500 text-rose-400"}`}
-                      >
+                      <div className={`px-2.5 py-1 text-xs rounded-full border ${t.type === "income" ? "border-emerald-500 text-emerald-400" : "border-rose-500 text-rose-400"}`}>
                         {t.type === "income" ? "Thu" : "Chi"}
                       </div>
                       <div className="font-medium truncate tracking-tight">{t.title}</div>
@@ -616,7 +691,6 @@ export default function App() {
 
           <UICard title="Trực quan hoá">
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              {/* Pie Thu/Chi */}
               <div className="bg-slate-900/60 rounded-2xl p-3 border border-slate-700 h-80">
                 <div className="text-xs mb-2 text-slate-400">Tổng Thu vs Chi</div>
                 <ResponsiveContainer width="100%" height="100%">
@@ -632,7 +706,6 @@ export default function App() {
                 </ResponsiveContainer>
               </div>
 
-              {/* Bar chi theo người */}
               <div className="bg-slate-900/60 rounded-2xl p-3 border border-slate-700 h-80">
                 <div className="text-xs mb-2 text-slate-400">Chi theo người trả</div>
                 <ResponsiveContainer width="100%" height="100%">
@@ -651,7 +724,6 @@ export default function App() {
                 </ResponsiveContainer>
               </div>
 
-              {/* Flow by date */}
               <div className="bg-slate-900/60 rounded-2xl p-3 border border-slate-700 h-80 xl:col-span-2">
                 <div className="text-xs mb-2 text-slate-400">Thu/Chi theo ngày</div>
                 <ResponsiveContainer width="100%" height="100%">
@@ -667,7 +739,6 @@ export default function App() {
                 </ResponsiveContainer>
               </div>
 
-              {/* Balances */}
               <div className="bg-slate-900/60 rounded-2xl p-3 border border-slate-700 h-80 xl:col-span-2">
                 <div className="text-xs mb-2 text-slate-400">Số dư theo thành viên</div>
                 <ResponsiveContainer width="100%" height="100%">
