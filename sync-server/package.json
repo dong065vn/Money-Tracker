@@ -1,15 +1,11 @@
 {
-  "name": "moneytracker-sync-server",
+  "name": "money-tracker-fullstack",
+  "private": true,
   "type": "module",
-  "version": "1.0.0",
-  "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "build": "vite build",
+    "start": "node server.js"
   },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "helmet": "^7.1.0"
-  }
+  "dependencies": { "cors": "^2.8.5", "express": "^4.19.2", "serve-static": "^1.15.0" },
+  "devDependencies": { "vite": "^5.0.0" }
 }
