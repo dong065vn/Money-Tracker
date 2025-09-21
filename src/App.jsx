@@ -582,36 +582,74 @@ export default function App() {
           >
             <div className="space-y-3">
               {txFiltered.length === 0 && <div className="text-sm text-slate-400 text-center py-6">Không có giao dịch</div>}
-              {txFiltered.map((t) => {participants.filter((pid) => pid !== t.payerId).length > 0 && (
-  <div>
-    <div className="text-xs text-slate-400 mb-1">Đánh dấu đã trả</div>
-    <div className="flex flex-wrap gap-2">
-      {participants
-        .filter((pid) => pid !== t.payerId)
-        .map((pid) => {
-          const checked = (t.paid || []).includes(pid);
-          return (
-            <label
-              key={pid}
-              className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${
-                checked
-                  ? "bg-emerald-500/10 border-emerald-500 text-emerald-300"
-                  : "bg-slate-800/80 border-slate-600 text-slate-300"
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() => togglePaid(t.id, pid)}
-                className="accent-emerald-500"
-              />
-              {memberName(pid)}
-            </label>
-          );
-        })}
-    </div>
-  </div>
-)})}
+              {txFiltered.map((t) => {
+                const participants = (t.participants && t.participants.length ? t.participants : memberIds);
+                return (
+                  <div key={t.id} className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-slate-900/60 rounded-2xl p-3.5 border border-slate-700">
+                    <div className="md:col-span-7 flex items-center gap-3">
+                      <div className={`px-2.5 py-1 text-xs rounded-full border ${t.type === "income" ? "border-emerald-500 text-emerald-400" : "border-rose-500 text-rose-400"}`}>
+                        {t.type === "income" ? "Thu" : "Chi"}
+                      </div>
+                      <div className="font-medium truncate tracking-tight">{t.title}</div>
+                    </div>
+                    <div className="md:col-span-3 text-slate-300 text-xs">
+                      {participants.map((id) => memberName(id)).join(", ")}
+                    </div>
+                    <div className="md:col-span-2 text-right font-semibold">{formatVND(t.amount)}</div>
+
+                    <div className="md:col-span-12 grid grid-cols-1 gap-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs text-slate-400">{new Date(t.date).toLocaleString("vi-VN")}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-400 mr-1">Payer:</span>
+                          <UISelect label=" " value={t.payerId} onChange={(e)=>setTransactions(prev=>prev.map(x=>x.id===t.id?{...x,payerId:Number(e.target.value)}:x))}>
+                            {participants.map((id)=> <option key={id} value={id}>{memberName(id)}</option>)}
+                          </UISelect>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Thành viên tham gia</div>
+                        <div className="flex flex-wrap gap-2">
+                          {memberIds.map((pid) => {
+                            const checked = participants.includes(pid);
+                            return (
+                              <label key={pid} className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${checked ? "bg-sky-500/10 border-sky-500 text-sky-300" : "bg-slate-800/80 border-slate-600 text-slate-300"}`}>
+                                <input type="checkbox" checked={checked} onChange={() => toggleParticipantInTx(t.id, pid)} className="accent-sky-500" />
+                                {memberName(pid)}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Đánh dấu đã trả</div>
+                        <div className="flex flex-wrap gap-2">
+                          {participants.filter((pid) => pid !== t.payerId).map((pid) => {
+                            const checked = (t.paid || []).includes(pid);
+                            return (
+                              <label
+                                key={pid}
+                                className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${
+                                  checked ? "bg-emerald-500/10 border-emerald-500 text-emerald-300" : "bg-slate-800/80 border-slate-600 text-slate-300"
+                                }`}
+                              >
+                                <input type="checkbox" checked={checked} onChange={() => togglePaid(t.id, pid)} className="accent-emerald-500" />
+                                {memberName(pid)}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-end">
+                        <UIButton variant="ghost" onClick={() => removeTransaction(t.id)}>Xóa</UIButton>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </UICard>
 
