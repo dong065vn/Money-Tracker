@@ -1,56 +1,79 @@
+# =========================
 # Logs
+# =========================
 logs
 *.log
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-# Node
+# =========================
+# Node modules & caches
+# =========================
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+.pnp/
+.pnp.js
+.cache/
+.tmp/
 
+# =========================
 # Build output
-
+# =========================
+dist/
 build/
+.vite/
+vite-cache/
+.esbuild/
+.rollup.cache/
 
-# Local env
+# =========================
+# Test / Coverage / E2E
+# =========================
+coverage/
+.cypress/
+playwright-report/
+test-results/
+
+# =========================
+# TypeScript / Lint caches
+# =========================
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+
+# =========================
+# Env & Secrets
+# (giữ lại .env.example để tham chiếu)
+# =========================
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
-# Editor
-.vscode/
-.idea/
-*.swp
-
-# OS
+# =========================
+# OS / Editors
+# =========================
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 
-# Others
-*.log
-# Ignore tất cả trừ dist
-node_modules/
-build/
-!.gitignore
-!dist/
+# =========================
+# Git merge leftovers
+# =========================
+*.orig
+
+# =========================
+# Tooling khác (tùy có/không dùng)
+# =========================
+.turbo/
+.sass-cache/
+bower_components/
+
+# =========================
+# Server-side temp / uploads (nếu có)
+# =========================
+uploads/
+tmp/
