@@ -49,3 +49,8 @@ Thumbs.db
 
 # Others
 *.log
+# Ignore tất cả trừ dist
+node_modules/
+build/
+!.gitignore
+!dist/
