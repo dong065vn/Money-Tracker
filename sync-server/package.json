@@ -1,11 +1,16 @@
 {
-  "name": "money-tracker-fullstack",
+  "name": "money-tracker-sync",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
-  "dependencies": { "cors": "^2.8.5", "express": "^4.19.2", "serve-static": "^1.15.0" },
-  "devDependencies": { "vite": "^5.0.0" }
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
 }
