@@ -1,79 +1,77 @@
-# =========================
-# Logs
-# =========================
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# =========================
-# Node modules & caches
-# =========================
+# ================================
+# Node & build artifacts
+# ================================
 node_modules/
-.pnp/
-.pnp.js
-.cache/
-.tmp/
-
-# =========================
-# Build output
-# =========================
 dist/
 build/
+.cache/
 .vite/
-vite-cache/
-.esbuild/
-.rollup.cache/
-
-# =========================
-# Test / Coverage / E2E
-# =========================
-coverage/
-.cypress/
-playwright-report/
-test-results/
-
-# =========================
-# TypeScript / Lint caches
-# =========================
 *.tsbuildinfo
-.eslintcache
-.stylelintcache
 
-# =========================
-# Env & Secrets
-# (giữ lại .env.example để tham chiếu)
-# =========================
+# ================================
+# Environment / secrets
+# ================================
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
+*.key
+*.pem
+*.crt
+*.cert
+*.p12
+*.pfx
+*.token
+*.secret
+*.config.js.local
 
-# =========================
-# OS / Editors
-# =========================
+# ================================
+# Logs & debug
+# ================================
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+*.trace
+
+# ================================
+# Editor & system files
+# ================================
 .DS_Store
 Thumbs.db
+.vscode/
 .idea/
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
+*.swp
+*.swo
 
-# =========================
-# Git merge leftovers
-# =========================
+# ================================
+# Temporary / cache / backup
+# ================================
+*.bak
+*.tmp
+*.temp
+*.backup
 *.orig
+*.rej
+*.cache
+*.lock
+*.pid
 
-# =========================
-# Tooling khác (tùy có/không dùng)
-# =========================
-.turbo/
-.sass-cache/
-bower_components/
+# ================================
+# Exports & user data
+# ================================
+*.csv
+*.xlsx
+*.json
+!package.json
+!package-lock.json
+moneytracker_backup.json
+sync-server/data.json
 
-# =========================
-# Server-side temp / uploads (nếu có)
-# =========================
-uploads/
-tmp/
+# ================================
+# Coverage & test output
+# ================================
+coverage/
+.nyc_output/
+*.lcov
+*.test.js.snap

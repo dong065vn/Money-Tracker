@@ -1,31 +1,162 @@
-import React, { useState, useEffect, useMemo } from "react";
-import {
-  PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, ReferenceLine,
-} from "recharts";
+// src/App.jsx
+import React, { useEffect, useMemo, useState } from "react";
 
+/* =========================
+   ENV + SYNC (BACKEND)
+   ========================= */
 const SYNC_URL = import.meta.env.VITE_SYNC_URL;
 const SYNC_KEY = import.meta.env.VITE_SYNC_KEY;
 const SYNC_PULL_MS = Number(import.meta.env.VITE_SYNC_PULL_MS || 5000);
 
 /* =========================
-   ⚠️ FRONTEND CHỈ GỌI API BACKEND
-   KHÔNG dùng process.env, không tạo OAuth URL ở đây
+   FRONTEND chỉ gọi API backend
+   KHÔNG tự tạo OAuth URL ở đây
    ========================= */
 
-// ===== USER ID (per-user) =====
+/* =========================
+   USER-ID
+   ========================= */
 const USER_ID = (() => {
   const KEY = "mt_userId";
   let v = localStorage.getItem(KEY);
   if (!v) {
-    const guid = (crypto?.randomUUID?.() ?? `user-${Date.now()}`);
+    const guid = crypto?.randomUUID?.() ?? `user-${Date.now()}`;
     v = guid;
     localStorage.setItem(KEY, v);
   }
   return v;
 })();
 
-// ===== SYNC helpers =====
+/* =========================
+   Helpers tiền tệ (VND integer)
+   ========================= */
+const toInt = (v) => {
+  if (v === null || v === undefined) return 0;
+  if (typeof v === "number") return Math.trunc(v);
+  const s = String(v).replace(/[^\d-]/g, "");
+  const n = parseInt(s || "0", 10);
+  return isNaN(n) ? 0 : Math.trunc(n);
+};
+const toVND = (n) => (n ?? 0).toLocaleString("vi-VN", { maximumFractionDigits: 0 }) + " ₫";
+
+/* =========================
+   Core: chia tiền & tính toán (theo form yêu cầu)
+   ========================= */
+// Chia đều với cân dư
+function splitEqual(total, participants) {
+  const n = participants.length;
+  if (!n) return {};
+  const base = Math.floor(total / n);
+  let rem = total - base * n;
+  const shares = {};
+  for (let i = 0; i < n; i++) {
+    shares[participants[i]] = base + (rem > 0 ? 1 : 0);
+    rem -= rem > 0 ? 1 : 0;
+  }
+  return shares;
+}
+
+// Tính shares 1 giao dịch (đảm bảo tổng share == total)
+function computeShares(tx) {
+  const total = toInt(tx.total);
+  const ps = tx.participants || [];
+  if (ps.length === 0) return {};
+
+  if (tx.mode === "explicit" && tx.shares) {
+    const out = {};
+    ps.forEach((u) => (out[u] = Math.max(0, toInt(tx.shares[u]))));
+    let diff = total - Object.values(out).reduce((a, b) => a + b, 0);
+    for (let i = 0; i < ps.length && diff !== 0; i++) {
+      out[ps[i]] += diff > 0 ? 1 : -1;
+      diff += diff > 0 ? -1 : 1;
+    }
+    return out;
+  }
+
+  if (tx.mode === "weights" && tx.weights) {
+    const w = ps.map((u) => Math.max(0, Number(tx.weights[u] ?? 0)));
+    const sumW = w.reduce((a, b) => a + b, 0);
+    if (sumW <= 0) return splitEqual(total, ps);
+    const raw = w.map((wi) => Math.floor((total * wi) / sumW));
+    const out = {};
+    raw.forEach((v, i) => (out[ps[i]] = v));
+    let assigned = raw.reduce((a, b) => a + b, 0);
+    let rem = total - assigned;
+    for (let i = 0; i < ps.length && rem > 0; i++, rem--) out[ps[i]] += 1;
+    return out;
+  }
+
+  return splitEqual(total, ps);
+}
+
+// Balances & owes (trace từng giao dịch)
+function computeBalancesAndOwes(transactions) {
+  const balances = {};
+  const owes = []; // {from,to,amount,tx}
+
+  for (const tx of transactions) {
+    const total = toInt(tx.total);
+    const shares = computeShares(tx);
+
+    balances[tx.payer] = (balances[tx.payer] ?? 0) + total;
+
+    Object.entries(shares).forEach(([u, share]) => {
+      balances[u] = (balances[u] ?? 0) - share;
+      if (u !== tx.payer && share > 0) {
+        owes.push({ from: u, to: tx.payer, amount: share, tx: tx.id });
+      }
+    });
+  }
+  return { balances, owes };
+}
+
+// Gợi ý chuyển tiền (greedy)
+function settleGreedy(balances) {
+  const creditors = [];
+  const debtors = [];
+  Object.entries(balances).forEach(([name, amt]) => {
+    if (amt > 0) creditors.push({ name, amt });
+    else if (amt < 0) debtors.push({ name, amt: -amt });
+  });
+  creditors.sort((a, b) => b.amt - a.amt);
+  debtors.sort((a, b) => b.amt - a.amt);
+
+  const transfers = [];
+  let i = 0, j = 0;
+  while (i < debtors.length && j < creditors.length) {
+    const x = Math.min(debtors[i].amt, creditors[j].amt);
+    if (x > 0) transfers.push({ from: debtors[i].name, to: creditors[j].name, amount: x });
+    debtors[i].amt -= x;
+    creditors[j].amt -= x;
+    if (debtors[i].amt === 0) i++;
+    if (creditors[j].amt === 0) j++;
+  }
+  return transfers;
+}
+
+/* =========================
+   Storage (localStorage)
+   ========================= */
+const LS_MEMBERS = "mt_members_v2"; // v2 để tách dữ liệu cũ
+const LS_TXS = "mt_transactions_v2";
+const loadMembers = () => {
+  try {
+    const s = localStorage.getItem(LS_MEMBERS);
+    return s ? JSON.parse(s) : [];
+  } catch { return []; }
+};
+const saveMembers = (arr) => localStorage.setItem(LS_MEMBERS, JSON.stringify(arr));
+const loadTxs = () => {
+  try {
+    const s = localStorage.getItem(LS_TXS);
+    return s ? JSON.parse(s) : [];
+  } catch { return []; }
+};
+const saveTxs = (arr) => localStorage.setItem(LS_TXS, JSON.stringify(arr));
+
+/* =========================
+   SYNC helpers (giữ từ code 1)
+   ========================= */
 async function pullRemote() {
   if (!SYNC_URL) return null;
   const res = await fetch(`${SYNC_URL}/api/state`, {
@@ -59,130 +190,110 @@ async function pushRemote(state, etag) {
   return { ...data, etag: newEtag };
 }
 
-// ===== UI atoms (theme-aware) =====
-function UIButton({ children, variant = "solid", onClick, className = "", type = "button", theme = "dark" }) {
-  const base =
-    "inline-flex items-center justify-center rounded-3xl px-3.5 py-2.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed";
-  const ring = theme === "dark" ? "focus:ring-cyan-300 focus:ring-offset-slate-900" : "focus:ring-indigo-300 focus:ring-offset-white";
-
-  const stylesDark = {
-    solid: "bg-indigo-600 hover:bg-indigo-700 text-white shadow-2xl shadow-indigo-600/20",
-    ghost: "bg-transparent hover:bg-slate-800/60 text-slate-100 border border-slate-600",
-    danger: "bg-rose-500 hover:bg-rose-600 text-white shadow-2xl shadow-rose-500/20",
-    subtle: "bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700/60",
+/* =========================
+   UI Atoms
+   ========================= */
+function Button({ children, onClick, variant="primary", className="", type="button" }) {
+  const base = "inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2";
+  const map = {
+    primary: "bg-indigo-600 hover:bg-indigo-700 text-white focus:ring-indigo-300 focus:ring-offset-slate-900",
+    ghost: "bg-transparent border border-slate-700 hover:bg-slate-800/60 text-slate-100 focus:ring-cyan-300 focus:ring-offset-slate-900",
+    danger: "bg-rose-600 hover:bg-rose-700 text-white focus:ring-rose-300 focus:ring-offset-slate-900",
+    subtle: "bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700/60 focus:ring-cyan-300 focus:ring-offset-slate-900",
   };
-  const stylesLight = {
-    solid: "bg-indigo-600 hover:bg-indigo-700 text-white shadow-2xl shadow-indigo-600/20",
-    ghost: "bg-transparent hover:bg-slate-100 text-slate-800 border border-slate-300",
-    danger: "bg-rose-500 hover:bg-rose-600 text-white shadow-2xl shadow-rose-500/20",
-    subtle: "bg-white text-slate-800 border border-slate-300 hover:bg-slate-50",
-  };
-  const styles = theme === "dark" ? stylesDark : stylesLight;
-
-  return (
-    <button type={type} onClick={onClick} className={`${base} ${ring} ${styles[variant]} ${className}`}>
-      {children}
-    </button>
-  );
+  return <button type={type} onClick={onClick} className={`${base} ${map[variant]} ${className}`}>{children}</button>;
 }
-
-function UICard({ title, action, children, className = "", theme = "dark" }) {
-  const wrap = theme === "dark" ? "bg-slate-900/70 border-slate-700" : "bg-white border-slate-200";
-  const headerBorder = theme === "dark" ? "border-slate-700/60" : "border-slate-200";
-  return (
-    <section className={`backdrop-blur rounded-3xl border shadow-2xl shadow-black/30 ${wrap} ${className}`}>
-      <div className={`flex items-center justify-between px-4 sm:px-5 py-3 border-b ${headerBorder}`}>
-        <h2 className={`text-sm font-semibold tracking-wide ${theme === "dark" ? "text-slate-100" : "text-slate-800"}`}>{title}</h2>
-        {action}
-      </div>
-      <div className="p-4 sm:p-5">{children}</div>
-    </section>
-  );
-}
-
-function UIInput({ label, value, onChange, placeholder, type = "text", theme = "dark" }) {
-  const cls =
-    theme === "dark"
-      ? "rounded-3xl bg-slate-900/70 border border-slate-700 text-slate-100 placeholder:text-slate-400 focus:ring-cyan-300"
-      : "rounded-3xl bg-white border border-slate-300 text-slate-800 placeholder:text-slate-400 focus:ring-indigo-300";
+function Input({ label, value, onChange, placeholder, type="text" }) {
   return (
     <label className="space-y-1.5 block">
-      <span className={`text-xs ${theme === "dark" ? "text-slate-300" : "text-slate-600"}`}>{label}</span>
+      <span className="text-xs text-slate-300">{label}</span>
       <input
         type={type}
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className={`w-full px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 ${cls}`}
+        className="w-full px-3 py-2 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-300"
       />
     </label>
   );
 }
-
-function UISelect({ label, value, onChange, children, theme = "dark" }) {
-  const cls =
-    theme === "dark"
-      ? "rounded-3xl bg-slate-900/70 border border-slate-700 text-slate-100 focus:ring-cyan-300"
-      : "rounded-3xl bg-white border border-slate-300 text-slate-800 focus:ring-indigo-300";
+function Select({ label, value, onChange, children }) {
   return (
     <label className="space-y-1.5 block">
-      <span className={`text-xs ${theme === "dark" ? "text-slate-300" : "text-slate-600"}`}>{label}</span>
-      <select value={value} onChange={onChange} className={`w-full px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 ${cls}`}>
+      <span className="text-xs text-slate-300">{label}</span>
+      <select
+        value={value}
+        onChange={onChange}
+        className="w-full px-3 py-2 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-300"
+      >
         {children}
       </select>
     </label>
   );
 }
+function Card({ title, action, children }) {
+  return (
+    <section className="rounded-2xl border border-slate-700 bg-slate-900/60 shadow-lg shadow-black/20">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/60">
+        <h2 className="text-sm font-semibold text-slate-100">{title}</h2>
+        {action}
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
 
+/* =========================
+   APP
+   ========================= */
 export default function App() {
-  // ===== Design tokens =====
-  const palette = useMemo(() => ["#4f46e5", "#22d3ee", "#06b6d4", "#0ea5e9", "#a78bfa", "#6366f1", "#2dd4bf", "#38bdf8"], []);
+  // Theme (dark fixed cho gọn)
+  const pageBg = "bg-slate-950";
+  const pageText = "text-slate-100";
 
-  // Theme
-  const [theme, setTheme] = useState("dark");
-
-  // ===== Data =====
+  // Members (object dạng {id,name,color})
   const [members, setMembers] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("mt_members")) || [
-        { id: 1, name: "Đông", color: palette[0] },
-        { id: 2, name: "Thế Anh", color: palette[2] },
-      ];
-    } catch {
-      return [
-        { id: 1, name: "Đông", color: palette[0] },
-        { id: 2, name: "Thế Anh", color: palette[2] },
-      ];
-    }
+    const local = loadMembers();
+    if (Array.isArray(local) && local.length) return local;
+    return [
+      { id: 1, name: "Đông", color: "#4f46e5" },
+      { id: 2, name: "Thế Anh", color: "#06b6d4" },
+    ];
   });
+  const [memberInput, setMemberInput] = useState("");
 
-  const [transactions, setTransactions] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("mt_tx")) || [];
-    } catch {
-      return [];
-    }
-  });
+  // Transactions (theo thuật toán mới)
+  // tx = { id, payer: memberId, total, participants: [memberId], mode: 'equal'|'weights'|'explicit', weights?, shares?, note, ts }
+  const [txs, setTxs] = useState(() => loadTxs());
 
-  const [version, setVersion] = useState(0);
+  // Sync states
   const [etag, setEtag] = useState(null);
-  const stateObj = useMemo(() => ({ members, transactions }), [members, transactions]);
+  const [version, setVersion] = useState(0);
 
-  // ===== Sync effects =====
+  // Persist local
+  useEffect(() => saveMembers(members), [members]);
+  useEffect(() => saveTxs(txs), [txs]);
+
+  // Initial pull
   useEffect(() => {
     (async () => {
       try {
         const remote = await pullRemote();
-        if (remote && remote.state) {
-          setMembers(remote.state.members ?? []);
-          setTransactions(remote.state.transactions ?? []);
+        if (remote?.state) {
+          const m = Array.isArray(remote.state.members) ? remote.state.members : members;
+          const t = Array.isArray(remote.state.transactions) ? remote.state.transactions : txs;
+          setMembers(m);
+          setTxs(t);
           setVersion(remote.version || 0);
           setEtag(remote.etag || null);
         }
       } catch {}
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Push on change (debounce)
+  const stateObj = useMemo(() => ({ members, transactions: txs }), [members, txs]);
   useEffect(() => {
     const to = setTimeout(async () => {
       try {
@@ -191,7 +302,7 @@ export default function App() {
           const remote = await pullRemote();
           if (remote?.state) {
             setMembers(remote.state.members ?? []);
-            setTransactions(remote.state.transactions ?? []);
+            setTxs(remote.state.transactions ?? []);
             setVersion(remote.version || 0);
             setEtag(remote.etag || null);
           }
@@ -202,8 +313,10 @@ export default function App() {
       } catch {}
     }, 400);
     return () => clearTimeout(to);
-  }, [stateObj]); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateObj]);
 
+  // Poll pull
   useEffect(() => {
     if (!SYNC_URL) return;
     const t = setInterval(async () => {
@@ -211,7 +324,7 @@ export default function App() {
         const remote = await pullRemote();
         if (remote && remote.version > version) {
           setMembers(remote.state.members ?? []);
-          setTransactions(remote.state.transactions ?? []);
+          setTxs(remote.state.transactions ?? []);
           setVersion(remote.version);
           setEtag(remote.etag || null);
         }
@@ -220,256 +333,179 @@ export default function App() {
     return () => clearInterval(t);
   }, [version]);
 
-  // ===== Local state =====
-  const [nameInput, setNameInput] = useState("");
-  const [tx, setTx] = useState({ type: "expense", amount: "", title: "", payerId: 1, participants: [] });
-  const [query, setQuery] = useState("");
-  const [exportMemberId, setExportMemberId] = useState(0);
+  // ===== Derived from transactions (map id<->name) =====
+  const idToName = useMemo(() => {
+    const m = new Map();
+    members.forEach((x) => m.set(x.id, x.name));
+    return m;
+  }, [members]);
 
-  useEffect(() => localStorage.setItem("mt_members", JSON.stringify(members)), [members]);
-  useEffect(() => localStorage.setItem("mt_tx", JSON.stringify(transactions)), [transactions]);
+  // Chuyển đổi tx cho computeShares (dùng memberId)
+  const normalizedTxs = useMemo(() => {
+    return txs.map((t) => ({
+      ...t,
+      participants: (t.participants || []).filter((pid) => members.some((m) => m.id === pid)),
+      payer: members.some((m) => m.id === t.payer) ? t.payer : (members[0]?.id ?? 0),
+    }));
+  }, [txs, members]);
 
-  const memberName = (id) => members.find((m) => m.id === id)?.name || "---";
-  const memberIds = useMemo(() => members.map((m) => m.id), [members]);
+  const { balances, owes } = useMemo(() => {
+    // computeBalancesAndOwes dùng key là memberId
+    const converted = normalizedTxs.map((t) => ({
+      ...t,
+      // đảm bảo number int
+      total: toInt(t.total),
+    }));
+    return computeBalancesAndOwes(converted);
+  }, [normalizedTxs]);
 
-  useEffect(() => {
-    setTx((p) => ({ ...p, participants: p.participants?.length ? p.participants : memberIds }));
-  }, [memberIds]);
+  const balancesList = useMemo(() => {
+    // chuyển {memberId: amount} -> [{id,name,amount}]
+    return Object.entries(balances).map(([id, amt]) => ({
+      id: Number(id),
+      name: idToName.get(Number(id)) ?? `#${id}`,
+      amount: amt,
+    })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [balances, idToName]);
 
-  const nfCurrency = useMemo(() => new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }), []);
-  const nfNumber = useMemo(() => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }), []);
-  const formatVND = (n) => nfCurrency.format(Math.round(Number(n) || 0));
-  const formatInt = (n) => nfNumber.format(Math.round(Number(n) || 0));
+  const transfers = useMemo(() => {
+    // settleGreedy theo key "name" -> ta dùng name hiển thị, nhưng sẽ tính trên object mapping tạm
+    const nameBalances = {};
+    balancesList.forEach((b) => nameBalances[b.name] = b.amount);
+    return settleGreedy(nameBalances);
+  }, [balancesList]);
 
-  // ===== Actions =====
+  const totalCheck = useMemo(
+    () => Object.values(balances).reduce((a, b) => a + b, 0),
+    [balances]
+  );
+
+  /* =========================
+     Actions (Members)
+     ========================= */
   const addMember = () => {
-    if (!nameInput.trim()) return;
+    const name = memberInput.trim();
+    if (!name) return;
+    if (members.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
+      setMemberInput("");
+      return;
+    }
     const id = Date.now();
-    const color = palette[members.length % palette.length];
-    setMembers([...members, { id, name: nameInput.trim(), color }]);
-    setNameInput("");
-    setTx((p) => ({ ...p, payerId: p.payerId || id }));
+    const colors = ["#4f46e5","#22d3ee","#06b6d4","#0ea5e9","#a78bfa","#6366f1","#2dd4bf","#38bdf8"];
+    const color = colors[members.length % colors.length];
+    setMembers([...members, { id, name, color }]);
+    setMemberInput("");
   };
 
   const removeMember = (id) => {
     if (!confirm("Xóa thành viên này?")) return;
     const nextMembers = members.filter((m) => m.id !== id);
     setMembers(nextMembers);
-    const nextIds = nextMembers.map((m) => m.id);
-    setTransactions((prev) =>
-      prev.map((t) => ({
-        ...t,
-        payerId: t.payerId === id ? nextIds[0] ?? t.payerId : t.payerId,
-        paid: (t.paid || []).filter((p) => p !== id),
-        participants: (t.participants || memberIds).filter((p) => p !== id),
-      }))
-    );
-    setTx((p) => ({ ...p, payerId: p.payerId === id ? nextIds[0] ?? 0 : p.payerId, participants: (p.participants || []).filter((pid) => pid !== id) }));
+
+    // cập nhật txs: loại khỏi participants, nếu payer là id thì swap sang người đầu
+    const remainingIds = nextMembers.map((m) => m.id);
+    setTxs((arr) => arr.map((t) => {
+      const p = (t.participants || []).filter((pid) => pid !== id && remainingIds.includes(pid));
+      const newPayer = t.payer === id ? (p[0] ?? remainingIds[0] ?? 0) : t.payer;
+      const patch = { ...t, participants: p, payer: newPayer };
+      if (t.mode === "weights" && t.weights) {
+        const w = { ...t.weights };
+        delete w[id];
+        patch.weights = w;
+      }
+      if (t.mode === "explicit" && t.shares) {
+        const s = { ...t.shares };
+        delete s[id];
+        patch.shares = s;
+      }
+      return patch;
+    }));
   };
 
-  const parseAmount = (val) => {
-    if (val == null) return 0;
-    const s = String(val);
-    let out = "";
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (c >= "0" && c <= "9") out += c;
-    }
-    const n = parseInt(out, 10);
-    return isNaN(n) ? 0 : n;
+  /* =========================
+     Actions (Transactions)
+     ========================= */
+  // Form draft
+  const [payerDraft, setPayerDraft] = useState(0);
+  const [totalDraft, setTotalDraft] = useState("");
+  const [participantsDraft, setParticipantsDraft] = useState([]);
+  const [modeDraft, setModeDraft] = useState("equal"); // equal | weights | explicit
+  const [weightsDraft, setWeightsDraft] = useState({});
+  const [sharesDraft, setSharesDraft] = useState({});
+  const [noteDraft, setNoteDraft] = useState("");
+
+  // auto init payer + participants
+  useEffect(() => {
+    if (!payerDraft && members[0]?.id) setPayerDraft(members[0].id);
+    if (participantsDraft.length === 0) setParticipantsDraft(members.map((m) => m.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [members.length]);
+
+  const toggleParticipantDraft = (id) => {
+    setParticipantsDraft((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
   };
+  const onWeightDraftChange = (id, v) => setWeightsDraft((w) => ({ ...w, [id]: Number(v) }));
+  const onShareDraftChange = (id, v) => setSharesDraft((s) => ({ ...s, [id]: toInt(v) }));
 
   const addTransaction = () => {
-    const amount = parseAmount(tx.amount);
-    if (!tx.title.trim() || amount === 0 || !tx.payerId) {
-      alert("Điền tiêu đề, số tiền (>0) và người trả.");
+    const t = toInt(totalDraft);
+    if (!payerDraft || !members.some((m) => m.id === payerDraft)) {
+      alert("Payer không hợp lệ.");
       return;
     }
-    const parts = (tx.participants && tx.participants.length) ? tx.participants : memberIds;
-    const newTx = {
-      id: Date.now(),
-      type: tx.type,
-      title: tx.title.trim(),
-      amount,
-      payerId: tx.payerId,
-      paid: [],
+    if (t <= 0) {
+      alert("Total phải > 0.");
+      return;
+    }
+    const parts = participantsDraft.filter((pid) => members.some((m) => m.id === pid));
+    if (parts.length === 0) {
+      alert("Chọn ít nhất 1 participant.");
+      return;
+    }
+    const tx = {
+      id: `T${Date.now()}`,
+      payer: payerDraft,
+      total: t,
       participants: parts,
-      date: new Date().toISOString(),
+      mode: modeDraft,
+      note: noteDraft.trim(),
+      ts: new Date().toISOString(),
     };
-    setTransactions((p) => [newTx, ...p]);
-    setTx((p) => ({ ...p, title: "", amount: "", participants: memberIds }));
+    if (modeDraft === "weights") tx.weights = { ...weightsDraft };
+    if (modeDraft === "explicit") tx.shares = { ...sharesDraft };
+
+    // validate shares
+    const shares = computeShares(tx);
+    const sumShares = Object.values(shares).reduce((a, b) => a + b, 0);
+    if (sumShares !== t) {
+      alert("Lỗi cân tổng shares <> total. Vui lòng kiểm tra lại.");
+      return;
+    }
+
+    setTxs((arr) => [tx, ...arr]);
+    // reset
+    setTotalDraft("");
+    setModeDraft("equal");
+    setWeightsDraft({});
+    setSharesDraft({});
+    setNoteDraft("");
+    setParticipantsDraft(members.map((m) => m.id));
   };
 
-  const removeTransaction = (id) => {
+  const removeTx = (id) => {
     if (!confirm("Xóa giao dịch này?")) return;
-    setTransactions((p) => p.filter((t) => t.id !== id));
+    setTxs((arr) => arr.filter((t) => t.id !== id));
   };
 
-  const togglePaid = (txId, memberId) => {
-    setTransactions((prev) =>
-      prev.map((t) => {
-        if (t.id !== txId) return t;
-        if (memberId === t.payerId) return t;
-        const participants = (t.participants && t.participants.length) ? t.participants : memberIds;
-        if (!participants.includes(memberId)) return t;
-        const paid = new Set(t.paid || []);
-        paid.has(memberId) ? paid.delete(memberId) : paid.add(memberId);
-        return { ...t, paid: [...paid] };
-      })
-    );
-  };
-
-  const toggleParticipantInTx = (txId, memberId) => {
-    setTransactions((prev) =>
-      prev.map((t) => {
-        if (t.id !== txId) return t;
-        let participants = (t.participants && t.participants.length) ? [...t.participants] : [...memberIds];
-        if (participants.includes(memberId)) {
-          participants = participants.filter((p) => p !== memberId);
-        } else {
-          participants.push(memberId);
-        }
-        const paid = (t.paid || []).filter((p) => participants.includes(p));
-        const payerId = participants.includes(t.payerId) ? t.payerId : participants[0] ?? t.payerId;
-        return { ...t, participants, paid, payerId };
-      })
-    );
-  };
-
-  const toggleParticipantInDraft = (memberId) => {
-    setTx((prev) => {
-      const set = new Set(prev.participants?.length ? prev.participants : memberIds);
-      set.has(memberId) ? set.delete(memberId) : set.add(memberId);
-      return { ...prev, participants: [...set] };
-    });
-  };
-
-  const clearAll = () => {
-    if (!confirm("Xóa toàn bộ?")) return;
-    setTransactions([]);
-    setMembers([]);
-  };
-
-  // ===== Derived =====
-  const balances = useMemo(() => {
-    const map = new Map(members.map((m) => [m.id, 0]));
-    const ids = members.map((m) => m.id);
-    for (const t of transactions) {
-      const payer = t.payerId;
-      const participants = (t.participants && t.participants.length)
-        ? t.participants.filter((id) => ids.includes(id))
-        : [...ids];
-      const parts = Math.max(1, participants.length);
-      const share = Math.round(t.amount / parts);
-      const paidSet = new Set((t.paid || []).filter((p) => participants.includes(p) && p !== payer));
-      if (t.type === "expense") {
-        map.set(payer, (map.get(payer) || 0) + t.amount);
-        for (const p of participants) map.set(p, (map.get(p) || 0) - share);
-        for (const p of paidSet) {
-          map.set(p, (map.get(p) || 0) + share);
-          map.set(payer, (map.get(payer) || 0) - share);
-        }
-      } else {
-        map.set(payer, (map.get(payer) || 0) - t.amount);
-        for (const p of participants) map.set(p, (map.get(p) || 0) + share);
-        for (const p of paidSet) {
-          map.set(p, (map.get(p) || 0) - share);
-          map.set(payer, (map.get(payer) || 0) + share);
-        }
-      }
-    }
-    return Object.fromEntries(map);
-  }, [members, transactions]);
-
-  const totalsByType = useMemo(() => {
-    let income = 0, expense = 0;
-    for (const t of transactions) {
-      if (t.type === "income") income += t.amount;
-      else expense += t.amount;
-    }
-    return [
-      { name: "Thu", value: income },
-      { name: "Chi", value: expense },
-    ];
-  }, [transactions]);
-
-  const expenseByPayer = useMemo(() => {
-    const map = new Map();
-    for (const t of transactions) {
-      if (t.type !== "expense") continue;
-      map.set(t.payerId, (map.get(t.payerId) || 0) + t.amount);
-    }
-    return members.map((m) => ({ name: m.name, total: map.get(m.id) || 0 }));
-  }, [transactions, members]);
-
-  const flowByDate = useMemo(() => {
-    const fmt = (iso) => new Date(iso).toISOString().slice(0, 10);
-    const map = new Map();
-    for (const t of transactions) {
-      const d = fmt(t.date);
-      if (!map.has(d)) map.set(d, { date: d, Thu: 0, Chi: 0 });
-      if (t.type === "income") map.get(d).Thu += t.amount;
-      else map.get(d).Chi += t.amount;
-    }
-    return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
-  }, [transactions]);
-
-  const balancesSeries = useMemo(
-    () => members.map((m, i) => ({ name: m.name, Sodu: balances[m.id] || 0, color: m.color || palette[i % palette.length] })),
-    [members, balances, palette]
-  );
-
-  const avgPerMember = useMemo(() => {
-    if (members.length === 0) return { avgBalance: 0, avgExpense: 0, avgIncome: 0 };
-    let totalExpense = 0, totalIncome = 0;
-    for (const t of transactions) {
-      if (t.type === "income") totalIncome += t.amount;
-      else totalExpense += t.amount;
-    }
-    const sumBalances = members.reduce((s, m) => s + (balances[m.id] || 0), 0);
-    return {
-      avgBalance: Math.round(sumBalances / members.length),
-      avgExpense: Math.round(totalExpense / members.length),
-      avgIncome: Math.round(totalIncome / members.length),
-    };
-  }, [members, transactions, balances]);
-
-  // ===== Export/Import =====
-  const exportCSV = () => {
-    const rows = [["Type", "Title", "Amount(VND)", "Payer", "Participants", "Paid", "Date"]];
-    for (const t of transactions) {
-      const payer = memberName(t.payerId);
-      const participants = (t.participants && t.participants.length ? t.participants : memberIds).map((id) => memberName(id)).join("; ");
-      const paid = (t.paid || []).map((id) => memberName(id)).join("; ");
-      rows.push([t.type, t.title, t.amount, payer, participants, paid, new Date(t.date).toLocaleString("vi-VN")]);
-    }
-    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
+  /* =========================
+     Export / Import / Backup
+     ========================= */
+  const downloadJSON = () => {
+    const blob = new Blob([JSON.stringify({ members, transactions: txs }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "moneytracker_transactions.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const exportPersonalCSV = (memberId) => {
-    if (!memberId) return;
-    const rows = [["Member", "Type", "Title", "Total(VND)", "Share(VND)", "IsPayer", "Date"]];
-    for (const t of transactions) {
-      const participants = (t.participants && t.participants.length ? t.participants : memberIds);
-      if (!participants.includes(memberId)) continue;
-      const parts = Math.max(1, participants.length);
-      const share = Math.round(t.amount / parts);
-      const isPayer = t.payerId === memberId ? "Y" : "N";
-      rows.push([memberName(memberId), t.type, t.title, t.amount, share, isPayer, new Date(t.date).toLocaleString("vi-VN")]);
-    }
-    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `personal_${memberName(memberId)}.csv`;
+    a.download = "moneytracker_backup.json";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -482,7 +518,7 @@ export default function App() {
       try {
         const data = JSON.parse(e.target.result);
         if (Array.isArray(data.members)) setMembers(data.members);
-        if (Array.isArray(data.transactions)) setTransactions(data.transactions);
+        if (Array.isArray(data.transactions)) setTxs(data.transactions);
         alert("Import thành công");
       } catch {
         alert("File không hợp lệ");
@@ -491,24 +527,26 @@ export default function App() {
     r.readAsText(f);
   };
 
-  const downloadJSON = () => {
-    const blob = new Blob([JSON.stringify({ members, transactions }, null, 2)], { type: "application/json" });
+  const exportCSV = () => {
+    const rows = [["ID","Time","Payer","Total(VND)","Mode","Participants","Note"]];
+    for (const t of txs) {
+      const payer = idToName.get(t.payer) ?? t.payer;
+      const parts = (t.participants || []).map((id) => idToName.get(id) ?? id).join("; ");
+      rows.push([t.id, new Date(t.ts).toLocaleString("vi-VN"), payer, toInt(t.total), t.mode, parts, t.note || ""]);
+    }
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "moneytracker_backup.json";
+    a.download = "moneytracker_transactions.csv";
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  // ===== Filtering =====
-  const txFiltered = useMemo(() => {
-    if (!query.trim()) return transactions;
-    const q = query.trim().toLowerCase();
-    return transactions.filter((t) => t.title.toLowerCase().includes(q) || memberName(t.payerId).toLowerCase().includes(q));
-  }, [transactions, query]);
-
-  // ===== Connect Google Drive (backend trả URL) =====
+  /* =========================
+     Google Drive OAuth (BACKEND trả URL)
+     ========================= */
   const connectDrive = async () => {
     if (!SYNC_URL) {
       alert("Chưa cấu hình VITE_SYNC_URL");
@@ -526,342 +564,301 @@ export default function App() {
     }
   };
 
-  // ===== UI tokens from theme =====
-  const isDark = theme === "dark";
-  const pageBg = isDark ? "bg-slate-950" : "bg-slate-50";
-  const pageText = isDark ? "text-slate-100" : "text-slate-800";
-  const headerBg = isDark ? "bg-slate-950/70 border-slate-800" : "bg-white/70 border-slate-200";
-  const chipOn = isDark ? "bg-indigo-500/10 border-indigo-400 text-indigo-300" : "bg-indigo-50 border-indigo-300 text-indigo-700";
-  const chipOff = isDark ? "bg-slate-900/70 border-slate-700 text-slate-300" : "bg-white border-slate-300 text-slate-700";
-  const smallMuted = isDark ? "text-slate-400" : "text-slate-500";
+  /* =========================
+     Mobile Bottom Nav
+     ========================= */
+  const [tab, setTab] = useState("tx"); // tx | members | summary | settings
 
-  const axisTick = { fill: isDark ? "#cbd5e1" : "#475569", fontSize: 12 };
-  const axisLine = { stroke: isDark ? "#475569" : "#cbd5e1" };
-  const gridStroke = isDark ? "#475569" : "#e2e8f0";
-  const tooltipStyle = { backgroundColor: isDark ? "#0f172a" : "#ffffff", border: `1px solid ${isDark ? "#334155" : "#e2e8f0"}`, color: isDark ? "#0ea5e9" : "#1f2937" };
-  const legendStyle = { color: isDark ? "#cbd5e1" : "#334155", fontSize: 12 };
-
-  // ===== Render =====
+  /* =========================
+     UI
+     ========================= */
   return (
     <div className={`min-h-screen ${pageBg} ${pageText} font-[Inter]`}>
       {/* Header */}
-      <div className={`sticky top-0 z-20 ${headerBg} backdrop-blur border-b`}>
+      <div className="sticky top-0 z-20 bg-slate-950/70 border-b border-slate-800 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-3xl bg-gradient-to-tr from-indigo-600 to-cyan-400 grid place-items-center font-bold">₫</div>
+            <div className="h-9 w-9 rounded-2xl bg-gradient-to-tr from-indigo-600 to-cyan-400 grid place-items-center font-extrabold">₫</div>
             <div className="leading-tight">
               <div className="font-semibold tracking-tight">MoneyTracker</div>
-              <div className={`text-xs ${smallMuted}`}>Theo dõi & chia đều</div>
+              <div className="text-xs text-slate-400">Chia tiền nhóm · VND integer</div>
             </div>
           </div>
-
           <div className="hidden sm:flex items-center gap-2">
-            <UIButton theme={theme} variant="ghost" onClick={connectDrive}>Kết nối Google Drive</UIButton>
-            <UIButton theme={theme} variant="subtle" onClick={downloadJSON}>Sao lưu</UIButton>
-            <label className={`inline-flex items-center rounded-3xl px-3.5 py-2.5 text-sm cursor-pointer border ${isDark ? "bg-slate-900/70 border-slate-700" : "bg-white border-slate-300"}`}>
+            <Button variant="ghost" onClick={connectDrive}>Kết nối Google Drive</Button>
+            <Button variant="subtle" onClick={downloadJSON}>Sao lưu</Button>
+            <label className="inline-flex items-center rounded-xl px-3 py-2 text-sm cursor-pointer border bg-slate-900/70 border-slate-700">
               Import JSON
               <input type="file" accept="application/json" onChange={importJSON} className="hidden" />
             </label>
-            <UIButton theme={theme} variant="ghost" onClick={exportCSV}>Export CSV</UIButton>
-            <UISelect theme={theme} label="Cá nhân" value={exportMemberId} onChange={(e) => setExportMemberId(Number(e.target.value))}>
-              <option value={0}>Chọn thành viên</option>
-              {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </UISelect>
-            <UIButton theme={theme} variant="ghost" onClick={() => exportPersonalCSV(exportMemberId)}>Export cá nhân</UIButton>
-            <UIButton theme={theme} variant="danger" onClick={clearAll}>Reset</UIButton>
-            <UIButton theme={theme} variant="ghost" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")} className="ml-1">
-              {theme === "dark" ? "☀️ Light" : "🌙 Dark"}
-            </UIButton>
+            <Button variant="ghost" onClick={exportCSV}>Export CSV</Button>
           </div>
         </div>
       </div>
 
       {/* Body */}
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Left */}
-              <div className="lg:col-span-1 space-y-6">
-                <UICard theme={theme}
-                  title="Thành viên"
-                  action={
-                    <div className="flex items-end gap-2">
-                      <UIInput theme={theme} label="Thêm thành viên" value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Tên" />
-                      <UIButton theme={theme} onClick={addMember}>Thêm</UIButton>
-                    </div>
-                  }
-                >
-                  <div className="space-y-2">
-                    {members.map((m) => (
-                      <div key={m.id} className={`flex items-center justify-between rounded-3xl px-3.5 py-2.5 border ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                        <div className="flex items-center gap-3">
-                          <div className="h-7 w-7 rounded-xl" style={{ background: m.color }} />
-                          <div className="leading-tight">
-                            <div className="font-medium tracking-tight">{m.name}</div>
-                            <div className={`text-xs ${smallMuted}`}>{formatVND(balances[m.id] || 0)}</div>
-                          </div>
-                        </div>
-                        <UIButton theme={theme} variant="ghost" className="!px-2" onClick={() => removeMember(m.id)}>
-                          Xóa
-                        </UIButton>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 pb-28 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* LEFT: Add Transaction */}
+        <div className="lg:col-span-1 space-y-6">
+          <Card
+            title="Thêm giao dịch"
+            action={null}
+          >
+            <div className="grid grid-cols-1 gap-3">
+              <Select label="Payer" value={payerDraft} onChange={(e) => setPayerDraft(Number(e.target.value))}>
+                {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </Select>
+              <Input label="Total (VND)" value={totalDraft} onChange={(e) => setTotalDraft(e.target.value)} placeholder="vd 120000" />
+              <Select label="Mode" value={modeDraft} onChange={(e) => setModeDraft(e.target.value)}>
+                <option value="equal">Equal</option>
+                <option value="weights">Weights</option>
+                <option value="explicit">Explicit</option>
+              </Select>
+
+              <div>
+                <div className="text-xs text-slate-400 mb-2">Participants</div>
+                <div className="flex flex-wrap gap-2">
+                  {members.map((m) => {
+                    const active = participantsDraft.includes(m.id);
+                    return (
+                      <button
+                        type="button"
+                        key={m.id}
+                        onClick={() => toggleParticipantDraft(m.id)}
+                        className={`px-3 py-1.5 rounded-full border text-xs ${
+                          active ? "border-emerald-400 bg-emerald-500/15" : "border-slate-700 bg-slate-900/70 hover:bg-slate-800/70"
+                        }`}
+                      >
+                        {m.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {modeDraft === "weights" && participantsDraft.length > 0 && (
+                <div>
+                  <div className="text-xs text-slate-400 mb-2">Weights</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {participantsDraft.map((pid) => (
+                      <div key={pid} className="flex items-center gap-2">
+                        <div className="w-28 text-sm text-slate-300">{idToName.get(pid)}</div>
+                        <input
+                          className="flex-1 bg-slate-900/70 border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                          placeholder="vd 1"
+                          inputMode="decimal"
+                          value={weightsDraft[pid] ?? ""}
+                          onChange={(e) => onWeightDraftChange(pid, e.target.value)}
+                        />
                       </div>
                     ))}
-                    {members.length === 0 && <div className={`text-sm ${smallMuted} text-center py-6`}>Chưa có thành viên</div>}
                   </div>
-                </UICard>
-      
-                <UICard theme={theme} title="Thêm giao dịch">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <UISelect theme={theme} label="Loại" value={tx.type} onChange={(e) => setTx({ ...tx, type: e.target.value })}>
-                      <option value="expense">Chi (Expense)</option>
-                      <option value="income">Thu (Income)</option>
-                    </UISelect>
-                    <UIInput theme={theme} label="Số tiền (VND)" value={tx.amount} onChange={(e) => setTx({ ...tx, amount: e.target.value })} placeholder="100000" />
-                    <UISelect theme={theme} label="Người trả / Thu" value={tx.payerId} onChange={(e) => setTx({ ...tx, payerId: Number(e.target.value) })}>
-                      {members.map((m) => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </UISelect>
-                    <UIInput theme={theme} label="Tiêu đề" value={tx.title} onChange={(e) => setTx({ ...tx, title: e.target.value })} placeholder="Mua cafe, tiền điện..." />
-                  </div>
-      
-                  <div className="mt-3">
-                    <div className={`text-xs mb-2 ${smallMuted}`}>Thành viên tham gia</div>
-                    <div className="flex flex-wrap gap-2">
-                      {members.map((m) => {
-                        const checked = (tx.participants || memberIds).includes(m.id);
-                        return (
-                          <label key={m.id} className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${checked ? chipOn : chipOff}`}>
-                            <input aria-label={`chọn ${m.name}`} type="checkbox" checked={checked} onChange={() => toggleParticipantInDraft(m.id)} className="accent-indigo-500" />
-                            {m.name}
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-      
-                  <div className="mt-4 flex items-center justify-end">
-                    <UIButton theme={theme} onClick={addTransaction}>Thêm giao dịch</UIButton>
-                  </div>
-                </UICard>
-              </div>
-      
-              {/* Right */}
-              <div className="lg:col-span-2 space-y-6">
-                <UICard theme={theme}
-                  title="Lịch sử"
-                  action={<UIInput theme={theme} label="Tìm kiếm" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nhập tiêu đề hoặc người trả" />}
-                >
-                  <div className="space-y-3">
-                    {txFiltered.length === 0 && <div className={`text-sm ${smallMuted} text-center py-6`}>Không có giao dịch</div>}
-                    {txFiltered.map((t) => {
-                      const participants = (t.participants && t.participants.length ? t.participants : memberIds);
-                      return (
-                        <div key={t.id} className={`grid grid-cols-1 md:grid-cols-12 gap-3 rounded-3xl p-3.5 border ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                          <div className="md:col-span-7 flex items-center gap-3">
-                            <div className={`px-2.5 py-1 text-xs rounded-full border ${t.type === "income" ? "border-emerald-500 text-emerald-500" : "border-rose-500 text-rose-500"}`}>
-                              {t.type === "income" ? "Thu" : "Chi"}
-                            </div>
-                            <div className="font-medium truncate tracking-tight">{t.title}</div>
-                          </div>
-                          <div className={`md:col-span-3 text-xs ${smallMuted}`}>
-                            {participants.map((id) => memberName(id)).join(", ")}
-                          </div>
-                          <div className="md:col-span-2 text-right font-semibold">{formatVND(t.amount)}</div>
-      
-                          <div className="md:col-span-12 grid grid-cols-1 gap-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className={`text-xs ${smallMuted}`}>{new Date(t.date).toLocaleString("vi-VN")}</div>
-                              <div className="flex items-center gap-2">
-                                <span className={`text-xs ${smallMuted} mr-1`}>Payer:</span>
-                                <UISelect theme={theme} label=" " value={t.payerId} onChange={(e)=>setTransactions(prev=>prev.map(x=>x.id===t.id?{...x,payerId:Number(e.target.value)}:x))}>
-                                  {participants.map((id)=> <option key={id} value={id}>{memberName(id)}</option>)}
-                                </UISelect>
-                              </div>
-                            </div>
-      
-                            <div>
-                              <div className={`text-xs mb-1 ${smallMuted}`}>Thành viên tham gia</div>
-                              <div className="flex flex-wrap gap-2">
-                                {memberIds.map((pid) => {
-                                  const checked = participants.includes(pid);
-                                  return (
-                                    <label key={pid} className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${checked ? chipOn : chipOff}`}>
-                                      <input aria-label={`tham gia ${memberName(pid)}`} type="checkbox" checked={checked} onChange={() => toggleParticipantInTx(t.id, pid)} className="accent-indigo-500" />
-                                      {memberName(pid)}
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            </div>
-      
-                            <div>
-                              <div className={`text-xs mb-1 ${smallMuted}`}>Đánh dấu đã trả</div>
-                              <div className="flex flex-wrap gap-2">
-                                {participants.filter((pid) => pid !== t.payerId).map((pid) => {
-                                  const checked = (t.paid || []).includes(pid);
-                                  return (
-                                    <label
-                                      key={pid}
-                                      className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border text-xs ${
-                                        checked ? (isDark?"bg-emerald-500/10 border-emerald-400 text-emerald-300":"bg-emerald-50 border-emerald-300 text-emerald-700")
-                                                : chipOff
-                                      }`}
-                                    >
-                                      <input aria-label={`đã trả ${memberName(pid)}`} type="checkbox" checked={checked} onChange={() => togglePaid(t.id, pid)} className="accent-emerald-500" />
-                                      {memberName(pid)}
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            </div>
-      
-                            <div className="flex items-center justify-end">
-                              <UIButton theme={theme} variant="ghost" onClick={() => removeTransaction(t.id)}>Xóa</UIButton>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </UICard>
-      
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                  <UICard theme={theme} title="Số dư từng thành viên">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {members.map((m) => (
-                        <div key={m.id} className={`flex items-center justify-between rounded-3xl px-3.5 py-2.5 border ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                          <div className="flex items-center gap-3">
-                            <div className="h-7 w-7 rounded-xl" style={{ background: m.color }} />
-                            <div className="font-medium tracking-tight">{m.name}</div>
-                          </div>
-                          <div className="text-right">
-                            <div className={`text-sm ${isDark?"text-slate-300":"text-slate-700"}`}>{formatVND(balances[m.id] || 0)}</div>
-                            <div className={`text-xs ${smallMuted}`}>{(balances[m.id] || 0) > 0 ? "Người khác nợ" : "Còn nợ"}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </UICard>
-      
-                  <UICard theme={theme} title="Trung bình mỗi người">
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className={`rounded-3xl p-4 border text-center ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                        <div className={`text-xs ${smallMuted}`}>Số dư bình quân</div>
-                        <div className="text-lg font-semibold mt-1">{formatVND(avgPerMember.avgBalance)}</div>
-                      </div>
-                      <div className={`rounded-3xl p-4 border text-center ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                        <div className={`text-xs ${smallMuted}`}>Chi / người</div>
-                        <div className="text-lg font-semibold mt-1">{formatVND(avgPerMember.avgExpense)}</div>
-                      </div>
-                      <div className={`rounded-3xl p-4 border text-center ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                        <div className={`text-xs ${smallMuted}`}>Thu / người</div>
-                        <div className="text-lg font-semibold mt-1">{formatVND(avgPerMember.avgIncome)}</div>
-                      </div>
-                    </div>
-                  </UICard>
                 </div>
-      
-                <UICard theme={theme} title="Trực quan hoá">
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                    {/* Pie */}
-                    <div className={`rounded-3xl p-3 border h-80 ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                      <div className={`text-xs mb-2 ${smallMuted}`}>Tổng Thu vs Chi</div>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <defs>
-                            <linearGradient id="pg1" x1="0" x2="0" y1="0" y2="1">
-                              <stop offset="0%" stopColor="#4f46e5" stopOpacity="1"/>
-                              <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.6"/>
-                            </linearGradient>
-                            <linearGradient id="pg2" x1="0" x2="0" y1="0" y2="1">
-                              <stop offset="0%" stopColor="#22d3ee" stopOpacity="1"/>
-                              <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.6"/>
-                            </linearGradient>
-                          </defs>
-                          <Pie data={totalsByType} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>
-                            {totalsByType.map((_, idx) => (
-                              <Cell key={idx} fill={idx===0 ? "url(#pg1)" : "url(#pg2)"} />
-                            ))}
-                          </Pie>
-                          <Tooltip wrapperStyle={tooltipStyle} formatter={(v) => [formatVND(v)]} />
-                          <Legend wrapperStyle={legendStyle} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-      
-                    {/* Bar: expense by payer */}
-                    <div className={`rounded-3xl p-3 border h-80 ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                      <div className={`text-xs mb-2 ${smallMuted}`}>Chi theo người trả</div>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={expenseByPayer} margin={{ top: 8, right: 8, bottom: 16, left: 8 }} barCategoryGap="25%">
-                          <defs>
-                            <linearGradient id="bg1" x1="0" x2="0" y1="0" y2="1">
-                              <stop offset="0%" stopColor="#4f46e5" stopOpacity="1"/>
-                              <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.6"/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                          <XAxis dataKey="name" tick={axisTick} axisLine={axisLine} tickLine={{ stroke: isDark ? "#475569" : "#94a3b8" }} />
-                          <YAxis tickFormatter={(v) => formatInt(v)} tick={axisTick} axisLine={axisLine} tickLine={{ stroke: isDark ? "#475569" : "#94a3b8" }} />
-                          <Tooltip wrapperStyle={tooltipStyle} formatter={(v) => [formatVND(v)]} />
-                          <Legend wrapperStyle={legendStyle} />
-                          <Bar dataKey="total" name="Tổng chi" radius={[10, 10, 0, 0]} fill="url(#bg1)" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-      
-                    {/* Bar: flow by date */}
-                    <div className={`rounded-3xl p-3 border h-80 xl:col-span-2 ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                      <div className={`text-xs mb-2 ${smallMuted}`}>Thu/Chi theo ngày</div>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={flowByDate} margin={{ top: 8, right: 8, bottom: 16, left: 8 }} barCategoryGap="20%">
-                          <defs>
-                            <linearGradient id="bthu" x1="0" x2="0" y1="0" y2="1">
-                              <stop offset="0%" stopColor="#22d3ee" stopOpacity="1"/>
-                              <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.6"/>
-                            </linearGradient>
-                            <linearGradient id="bchi" x1="0" x2="0" y1="0" y2="1">
-                              <stop offset="0%" stopColor="#a78bfa" stopOpacity="1"/>
-                              <stop offset="100%" stopColor="#a78bfa" stopOpacity="0.6"/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                          <XAxis dataKey="date" tick={axisTick} axisLine={axisLine} tickLine={{ stroke: isDark ? "#475569" : "#94a3b8" }} angle={-30} textAnchor="end" height={50} />
-                          <YAxis tickFormatter={(v) => formatInt(v)} tick={axisTick} axisLine={axisLine} tickLine={{ stroke: isDark ? "#475569" : "#94a3b8" }} />
-                          <Tooltip wrapperStyle={tooltipStyle} formatter={(v) => [formatVND(v)]} />
-                          <Legend wrapperStyle={legendStyle} />
-                          <Bar dataKey="Thu" stackId="a" name="Thu" radius={[10, 10, 0, 0]} fill="url(#bthu)" />
-                          <Bar dataKey="Chi" stackId="a" name="Chi" radius={[10, 10, 0, 0]} fill="url(#bchi)" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-      
-                    {/* Bar: balance per member */}
-                    <div className={`rounded-3xl p-3 border h-80 xl:col-span-2 ${isDark?"bg-slate-900/60 border-slate-700":"bg-white border-slate-300"}`}>
-                      <div className={`text-xs mb-2 ${smallMuted}`}>Số dư theo thành viên</div>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={balancesSeries} margin={{ top: 8, right: 8, bottom: 16, left: 8 }} barCategoryGap="25%">
-                          <defs>
-                            <linearGradient id="bbal" x1="0" x2="0" y1="0" y2="1">
-                              <stop offset="0%" stopColor="#6366f1" stopOpacity="1"/>
-                              <stop offset="100%" stopColor="#6366f1" stopOpacity="0.6"/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                          <XAxis dataKey="name" tick={axisTick} axisLine={axisLine} tickLine={{ stroke: isDark ? "#475569" : "#94a3b8" }} />
-                          <YAxis tickFormatter={(v) => formatInt(v)} tick={axisTick} axisLine={axisLine} tickLine={{ stroke: isDark ? "#475569" : "#94a3b8" }} />
-                          <ReferenceLine y={0} stroke="#94a3b8" />
-                          <Tooltip wrapperStyle={tooltipStyle} formatter={(v) => [formatVND(v)]} />
-                          <Legend wrapperStyle={legendStyle} />
-                          <Bar dataKey="Sodu" name="Số dư" radius={[10, 10, 0, 0]} fill="url(#bbal)" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
+              )}
+
+              {modeDraft === "explicit" && participantsDraft.length > 0 && (
+                <div>
+                  <div className="text-xs text-slate-400 mb-2">Shares (VND)</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {participantsDraft.map((pid) => (
+                      <div key={pid} className="flex items-center gap-2">
+                        <div className="w-28 text-sm text-slate-300">{idToName.get(pid)}</div>
+                        <input
+                          className="flex-1 bg-slate-900/70 border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                          placeholder="vd 30000"
+                          inputMode="numeric"
+                          value={sharesDraft[pid] ?? ""}
+                          onChange={(e) => onShareDraftChange(pid, e.target.value)}
+                        />
+                      </div>
+                    ))}
                   </div>
-                </UICard>
+                </div>
+              )}
+
+              <Input label="Ghi chú" value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} placeholder="VD: BBQ tối T6" />
+
+              <div className="flex items-center justify-end">
+                <Button onClick={addTransaction}>Thêm giao dịch</Button>
               </div>
             </div>
+          </Card>
 
-      <footer className={`py-8 text-center text-xs ${smallMuted}`}>© {new Date().getFullYear()} MoneyTracker · User: {USER_ID}</footer>
+          <Card
+            title="Thành viên"
+            action={
+              <div className="flex items-end gap-2">
+                <Input label="Thêm" value={memberInput} onChange={(e) => setMemberInput(e.target.value)} placeholder="Tên" />
+                <Button onClick={addMember}>Thêm</Button>
+              </div>
+            }
+          >
+            <div className="space-y-2">
+              {members.map((m) => (
+                <div key={m.id} className="rounded-xl px-3 py-2 border border-slate-700 bg-slate-900/60 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-6 w-6 rounded-lg" style={{ background: m.color }} />
+                    <div className="font-medium tracking-tight">{m.name}</div>
+                  </div>
+                  <Button variant="ghost" onClick={() => removeMember(m.id)}>Xóa</Button>
+                </div>
+              ))}
+              {members.length === 0 && <div className="text-sm text-slate-400 text-center py-4">Chưa có thành viên</div>}
+            </div>
+          </Card>
+        </div>
+
+        {/* RIGHT: Tabs content */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* NAV (desktop) */}
+          <Card
+            title="Điều hướng"
+            action={
+              <div className="hidden sm:flex gap-2">
+                <Button variant={tab==="tx"?"primary":"ghost"} onClick={()=>setTab("tx")}>Lịch sử</Button>
+                <Button variant={tab==="members"?"primary":"ghost"} onClick={()=>setTab("members")}>Thành viên</Button>
+                <Button variant={tab==="summary"?"primary":"ghost"} onClick={()=>setTab("summary")}>Tổng kết</Button>
+                <Button variant={tab==="settings"?"primary":"ghost"} onClick={()=>setTab("settings")}>Cài đặt</Button>
+              </div>
+            }
+          >
+            {/* Mobile hint */}
+            <div className="text-xs text-slate-400">Tip: Trên mobile dùng thanh điều hướng dưới cùng.</div>
+          </Card>
+
+          {/* TAB: Transactions */}
+          {tab === "tx" && (
+            <Card title={`Giao dịch (${txs.length})`} action={
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => exportCSV()}>Export CSV</Button>
+                <Button variant="danger" onClick={() => { if (confirm("Xóa tất cả giao dịch?")) setTxs([]); }}>Xóa hết</Button>
+              </div>
+            }>
+              <div className="space-y-3">
+                {txs.length === 0 && <div className="text-sm text-slate-400 text-center py-6">Chưa có giao dịch.</div>}
+                {txs.map((t) => {
+                  const parts = (t.participants || []).map((id) => idToName.get(id) ?? id).join(", ");
+                  const payerName = idToName.get(t.payer) ?? t.payer;
+                  const shares = computeShares(t);
+                  return (
+                    <div key={t.id} className="rounded-2xl p-3 border border-slate-700 bg-slate-900/60">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium tracking-tight">{t.note || "(Không ghi chú)"}</div>
+                        <div className="text-sm font-semibold">{toVND(t.total)}</div>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        {new Date(t.ts).toLocaleString("vi-VN")} · Mode: {t.mode} · Payer: <span className="text-slate-200">{payerName}</span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">Participants: {parts}</div>
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-emerald-300 hover:underline text-sm">Xem shares</summary>
+                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {Object.entries(shares).map(([uid, a]) => (
+                            <div key={uid} className="flex items-center justify-between rounded-lg px-3 py-2 bg-slate-950/40 border border-slate-700">
+                              <span className="text-slate-300">{idToName.get(Number(uid)) ?? uid}</span>
+                              <span className="font-semibold">{toVND(a)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                      <div className="mt-2 flex items-center justify-end">
+                        <Button variant="ghost" onClick={() => removeTx(t.id)}>Xóa</Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* TAB: Members */}
+          {tab === "members" && (
+            <Card title="Số dư theo thành viên" action={
+              <div className={`text-sm ${totalCheck===0?"text-emerald-300":"text-rose-300"}`}>
+                Tổng kiểm tra: {toVND(totalCheck)}
+              </div>
+            }>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {balancesList.map((b) => (
+                  <div key={b.id} className="rounded-xl px-3 py-2 border border-slate-700 bg-slate-900/60 flex items-center justify-between">
+                    <div className="font-medium">{b.name}</div>
+                    <div className={`font-semibold ${b.amount>0?"text-emerald-300":b.amount<0?"text-rose-300":"text-slate-300"}`}>{toVND(b.amount)}</div>
+                  </div>
+                ))}
+                {balancesList.length===0 && <div className="text-sm text-slate-400">Chưa có dữ liệu.</div>}
+              </div>
+            </Card>
+          )}
+
+          {/* TAB: Summary */}
+          {tab === "summary" && (
+            <Card title="Gợi ý chuyển tiền (Greedy)" action={null}>
+              {transfers.length === 0 ? (
+                <div className="text-sm text-slate-400">Không cần chuyển khoản.</div>
+              ) : (
+                <ul className="space-y-2">
+                  {transfers.map((t, i) => (
+                    <li key={i} className="flex justify-between rounded-lg px-3 py-2 bg-slate-950/40 border border-slate-700">
+                      <span>{t.from} → {t.to}</span>
+                      <span className="font-semibold">{toVND(t.amount)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="mt-4 text-xs text-slate-400">
+                * Thuật toán greedy giúp tối giản số lần chuyển, không đảm bảo tối ưu tuyệt đối trong mọi trường hợp — nhưng nhanh và dễ hiểu.
+              </div>
+            </Card>
+          )}
+
+          {/* TAB: Settings */}
+          {tab === "settings" && (
+            <Card title="Cài đặt & Dữ liệu" action={null}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Button variant="ghost" onClick={connectDrive}>Kết nối Google Drive</Button>
+                <Button variant="subtle" onClick={downloadJSON}>Sao lưu JSON</Button>
+                <label className="inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm cursor-pointer border bg-slate-900/70 border-slate-700">
+                  Import JSON
+                  <input type="file" accept="application/json" onChange={importJSON} className="hidden" />
+                </label>
+                <Button variant="ghost" onClick={exportCSV}>Export CSV</Button>
+                <Button variant="danger" onClick={() => { if (confirm("Xóa toàn bộ dữ liệu local?")) { setTxs([]); setMembers([]); }}}>Reset Local</Button>
+              </div>
+              <div className="mt-4 text-xs text-slate-400">
+                User: {USER_ID}{SYNC_URL ? ` · Sync ON` : ` · Sync OFF`} {SYNC_URL ? ` (pull ${SYNC_PULL_MS}ms)` : "" }
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom Mobile Nav */}
+      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-800 bg-slate-950/90 backdrop-blur sm:hidden">
+        <div className="max-w-7xl mx-auto grid grid-cols-4">
+          {[
+            { key: "tx", label: "Lịch sử", icon: "🧾" },
+            { key: "members", label: "Thành viên", icon: "👥" },
+            { key: "summary", label: "Tổng kết", icon: "✅" },
+            { key: "settings", label: "Cài đặt", icon: "⚙️" },
+          ].map((it) => {
+            const active = tab === it.key;
+            return (
+              <button
+                key={it.key}
+                onClick={() => setTab(it.key)}
+                className={`py-2.5 text-xs flex flex-col items-center ${active ? "text-indigo-300" : "text-slate-400"}`}
+              >
+                <span className="text-lg">{it.icon}</span>
+                <span>{it.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      <footer className="py-10 text-center text-xs text-slate-500">
+        © {new Date().getFullYear()} MoneyTracker · User: {USER_ID}
+      </footer>
     </div>
   );
 }
