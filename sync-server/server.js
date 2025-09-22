@@ -135,6 +135,12 @@ function getOAuth2Client(userId) {
 function getDriveClient(oauth2) {
   return google.drive({ version: "v3", auth: oauth2 });
 }
+app.post("/api/auth/reset", (req, res) => {
+  const uid = req.header("x-user-id");
+  if (!uid) return res.status(400).json({ error: "Missing x-user-id" });
+  tokenStore.delete(uid);
+  return res.json({ ok: true });
+});
 
 // Tìm (hoặc tạo) file của user
 async function ensureUserFile(drive) {

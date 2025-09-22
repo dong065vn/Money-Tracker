@@ -589,6 +589,23 @@ export default function App() {
     alert("Không thể kết nối Google Drive");
   }
 };
+  // Ngắt liên kết (xoá token ở server) để xin lại quyền/refresh_token
+  const unlinkDrive = async () => {
+    if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
+    if (!confirm("Ngắt liên kết Google Drive cho tài khoản này?")) return;
+
+    try {
+      const r = await fetch(`${SYNC_URL}/api/auth/reset`, {
+        method: "POST",
+        headers: { "x-user-id": USER_ID },
+      });
+      if (!r.ok) throw new Error("reset_failed");
+      alert("Đã ngắt liên kết. Bấm 'Kết nối Google Drive' để cấp lại quyền.");
+    } catch (e) {
+      console.error("[drive/reset] error:", e);
+      alert("Không thể ngắt liên kết. Kiểm tra server /api/auth/reset.");
+    }
+  };
 
   /* =========================
      Google Drive Sync helpers (LOAD/SAVE)
@@ -627,6 +644,13 @@ export default function App() {
 
       if (status === 403) {
         alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY/SYNC_API_KEY (server).");
+        return;
+      }
+      if (msg === "missing_scope_drive_appdata") {
+        const go = confirm(
+          "Token Drive hiện không có quyền 'appData'.\nBạn cần ngắt liên kết rồi kết nối lại để cấp quyền.\n\nBấm OK để ngắt liên kết ngay."
+        );
+        if (go) await unlinkDrive();
         return;
       }
 
@@ -712,7 +736,7 @@ const saveToDrive = async () => {
       headers: {
         "Content-Type": "application/json",
         "x-user-id": USER_ID,
-        "x-api-key": import.meta.env.VITE_SYNC_KEY || "",
+        "x-api-key": SYNC_KEY || "",
         Accept: "application/json",
       },
       body: JSON.stringify(payload),
@@ -731,6 +755,13 @@ const saveToDrive = async () => {
       }
       if (status === 403) {
         alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY/SYNC_API_KEY (server).");
+        return;
+      }
+      if (msg === "missing_scope_drive_appdata") {
+        const go = confirm(
+          "Token Drive hiện không có quyền 'appData'.\nBạn cần ngắt liên kết rồi kết nối lại để cấp quyền.\n\nBấm OK để ngắt liên kết ngay."
+        );
+        if (go) await unlinkDrive();
         return;
       }
 
@@ -771,6 +802,7 @@ const saveToDrive = async () => {
           <div className="hidden sm:flex items-center gap-2">
             <Button variant="ghost" onClick={connectDrive}>Kết nối Google Drive</Button>
             <Button variant="ghost" onClick={loadFromDrive}>Đồng bộ từ Drive</Button>
+            <Button variant="ghost" onClick={unlinkDrive}>Ngắt liên kết</Button>
             <Button variant="ghost" onClick={saveToDrive}>Lưu lên Drive</Button>
             <Button variant="subtle" onClick={downloadJSON}>Sao lưu</Button>
             <label className="inline-flex items-center rounded-xl px-3 py-2 text-sm cursor-pointer border bg-slate-900/70 border-slate-700">
@@ -1121,6 +1153,7 @@ const saveToDrive = async () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Button variant="ghost" onClick={connectDrive}>Kết nối Google Drive</Button>
                 <Button variant="ghost" onClick={loadFromDrive}>Đồng bộ từ Drive</Button>
+                <Button variant="ghost" onClick={unlinkDrive}>Ngắt liên kết Drive</Button>
                 <Button variant="ghost" onClick={saveToDrive}>Lưu lên Drive</Button>
                 <Button variant="subtle" onClick={downloadJSON}>Sao lưu JSON</Button>
                 <label className="inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm cursor-pointer border bg-slate-900/70 border-slate-700">
