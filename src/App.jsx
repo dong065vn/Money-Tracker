@@ -191,6 +191,7 @@ async function pushRemote(state, etag) {
   return { ...data, etag: newEtag };
 }
 
+
 /* =========================
    UI Atoms
    ========================= */
@@ -573,67 +574,144 @@ export default function App() {
      Google Drive OAuth (BACKEND trả URL)
      ========================= */
   const connectDrive = async () => {
-    if (!SYNC_URL) {
-      alert("Chưa cấu hình VITE_SYNC_URL");
-      return;
-    }
-    try {
-      const r = await fetch(`${SYNC_URL}/api/auth/url`, {
-        headers: { "x-user-id": USER_ID },
-      });
-      const { url } = await r.json();
-      if (url) window.open(url, "_blank", "width=520,height=640");
-      else alert("Không lấy được URL liên kết Google Drive");
-    } catch {
-      alert("Không thể kết nối Google Drive");
-    }
-  };
+  if (!SYNC_URL) {
+    alert("Chưa cấu hình VITE_SYNC_URL");
+    return;
+  }
+  try {
+    const r = await fetch(`${SYNC_URL}/api/auth/url?user=${encodeURIComponent(USER_ID)}`, {
+      headers: { "x-user-id": USER_ID },
+    });
+    const { url } = await r.json();
+    if (url) window.open(url, "_blank", "width=520,height=640");
+    else alert("Không lấy được URL liên kết Google Drive");
+  } catch {
+    alert("Không thể kết nối Google Drive");
+  }
+};
 
   /* =========================
      Google Drive Sync helpers (LOAD/SAVE)
      ========================= */
   const loadFromDrive = async () => {
-    if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
-    try {
-      const r = await fetch(`${SYNC_URL}/api/drive/load`, {
-        headers: { "x-user-id": USER_ID },
-      });
-      if (!r.ok) throw new Error("drive load failed");
-      const data = await r.json();
-      if (data?.state) {
-        const m = Array.isArray(data.state.members) ? data.state.members : [];
-        const t = Array.isArray(data.state.transactions) ? data.state.transactions : [];
-        setMembers(m);
-        setTxs(t);
-        setVersion(data.version || 0);
-        setEtag(data.etag || null);
-        alert("Đã đồng bộ từ Drive.");
-      } else {
-        alert("Không tìm thấy dữ liệu hợp lệ trên Drive.");
-      }
-    } catch (e) {
-      alert("Không thể tải từ Drive (server chưa hỗ trợ /api/drive/load?).");
-    }
-  };
+  if (!SYNC_URL) {
+    alert("Chưa cấu hình VITE_SYNC_URL");
+    return;
+  }
 
-  const saveToDrive = async () => {
-    if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
+  try {
+    const r = await fetch(`${SYNC_URL}/api/drive/load`, {
+      headers: {
+        Accept: "application/json",
+        "x-user-id": USER_ID,
+      },
+    });
+
+    // cố parse JSON (kể cả khi 500)
+    let out = null;
     try {
-      const r = await fetch(`${SYNC_URL}/api/drive/save`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": USER_ID,
-          "x-api-key": import.meta.env.VITE_SYNC_KEY || "",
-        },
-        body: JSON.stringify({ state: { members, transactions: txs } }),
-      });
-      if (!r.ok) throw new Error("drive save failed");
-      alert("Đã lưu dữ liệu hiện tại lên Drive.");
-    } catch (e) {
-      alert("Không thể lưu lên Drive (server chưa hỗ trợ /api/drive/save?).");
+      out = await r.json();
+    } catch (_) {
+      // có thể 500 không trả JSON
     }
-  };
+
+    // KHÔNG OK -> hiển thị lỗi chi tiết
+    if (!r.ok || out?.ok === false) {
+      const status = r.status;
+      const msg = out?.error || `load_failed (${status})`;
+
+      if (String(msg).includes("no_token") || status === 401) {
+        alert("Bạn chưa liên kết Google Drive hoặc phiên đã hết hạn.\nNhấn “Kết nối Google Drive” rồi thử lại.");
+        return;
+      }
+
+      if (status === 403) {
+        alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY/SYNC_API_KEY (server).");
+        return;
+      }
+
+      console.error("[drive/load] error:", msg);
+      alert(`Không thể tải từ Drive: ${msg}`);
+      return;
+    }
+
+    // OK -> out: { ok:true, data:{members,transactions}, version?, etag? }
+    const payload = out?.data || out; // phòng trường hợp server trả thẳng state
+    const members = Array.isArray(payload?.members) ? payload.members : [];
+    const transactions = Array.isArray(payload?.transactions) ? payload.transactions : [];
+
+    setMembers(members);
+    setTxs(transactions);
+
+    // version/etag có thể không có — set nếu có
+    if (typeof out?.version === "number") setVersion(out.version);
+    if (out?.etag) setEtag(out.etag);
+
+    alert("Đã đồng bộ từ Google Drive.");
+  } catch (e) {
+    console.error("[drive/load] exception:", e);
+    alert("Không thể tải từ Drive (sự cố mạng hoặc server).");
+  }
+};
+
+
+  const saveToDrive = async (members, txs) => {
+  if (!SYNC_URL) {
+    alert("Chưa cấu hình VITE_SYNC_URL");
+    return;
+  }
+
+  try {
+    const payload = { state: { members: members ?? [], transactions: txs ?? [] } };
+
+    const r = await fetch(`${SYNC_URL}/api/drive/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "x-user-id": USER_ID,
+        "x-api-key": (import.meta.env.VITE_SYNC_KEY || "").trim(),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    // Cố gắng lấy JSON nếu có
+    let out = null;
+    try {
+      out = await r.json();
+    } catch (_) {
+      // no-op: một số lỗi 500 có thể không trả JSON
+    }
+
+    if (!r.ok || out?.ok === false) {
+      const status = r.status;
+      const msg = out?.error || `save_failed (${status})`;
+
+      // Trường hợp phổ biến: chưa liên kết Drive -> server trả no_token
+      if (String(msg).includes("no_token") || status === 401) {
+        alert("Bạn chưa liên kết Google Drive hoặc phiên đăng nhập Drive đã hết hạn.\nHãy nhấn “Kết nối Google Drive” trước rồi thử lại.");
+        return;
+      }
+
+      // Trường hợp API key sai
+      if (status === 403) {
+        alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY/SYNC_API_KEY (server).");
+        return;
+      }
+
+      // Các lỗi khác
+      console.error("[drive/save] error:", msg);
+      alert(`Không thể lưu lên Drive: ${msg}`);
+      return;
+    }
+
+    alert("Đã lưu dữ liệu hiện tại lên Google Drive.");
+  } catch (e) {
+    console.error("[drive/save] exception:", e);
+    alert("Không thể lưu lên Drive (sự cố mạng hoặc server).");
+  }
+};
+
 
   /* =========================
      Mobile Bottom Nav
