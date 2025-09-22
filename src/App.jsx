@@ -624,7 +624,7 @@ export default function App() {
         headers: {
           "Content-Type": "application/json",
           "x-user-id": USER_ID,
-          "x-api-key": SYNC_KEY || "",
+          "x-api-key": import.meta.env.VITE_SYNC_KEY || "",
         },
         body: JSON.stringify({ state: { members, transactions: txs } }),
       });

@@ -26,7 +26,7 @@ const DEFAULT_ORIGINS = [
 ];
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || ""; // có thể truyền 1 hoặc nhiều, phân tách dấu phẩy
 const EXTRA_ORIGINS = FRONTEND_ORIGIN
-  ? FRONTEND_ORIGIN.split(",").map(s => s.trim()).filter(Boolean)
+  ? FRONTEND_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean)
   : [];
 const ALLOWED_ORIGINS = Array.from(new Set([...DEFAULT_ORIGINS, ...EXTRA_ORIGINS]));
 
@@ -203,9 +203,9 @@ async function saveToDrive(userId, nextState, ifMatch) {
 }
 
 /* ============ UTILS ============ */
-// Lấy user-id linh hoạt: header 'x-user-id' hoặc query '?user=' (để hợp với cách FE đang gọi)
+// Lấy user-id linh hoạt: header 'x-user-id' hoặc query '?user='
 function uidFromReq(req, res, isOptional = false) {
-  const headerUid = req.get("x-user-id"); // header là case-insensitive
+  const headerUid = req.get("x-user-id");
   const queryUid = req.query.user;
   const uid = headerUid || queryUid;
   if (!uid && !isOptional) {
@@ -218,7 +218,7 @@ function uidFromReq(req, res, isOptional = false) {
 /* ============ OAUTH ENDPOINTS ============ */
 // FE gọi để lấy URL liên kết Drive
 app.get("/api/auth/url", (req, res) => {
-  const userId = uidFromReq(req, res); // hỗ trợ cả header lẫn ?user=
+  const userId = uidFromReq(req, res);
   if (!userId) return;
 
   const oauth2 = getOAuth2Client();
@@ -332,7 +332,7 @@ app.put("/api/state", async (req, res) => {
       error: "conflict",
       current: { state: LOCAL_STATE, version: LOCAL_VERSION },
     });
-    }
+  }
   LOCAL_STATE = next || LOCAL_STATE;
   LOCAL_VERSION += 1;
   LOCAL_ETAG = `"v${LOCAL_VERSION}"`;
@@ -343,6 +343,8 @@ app.put("/api/state", async (req, res) => {
 });
 
 /* ============ TÙY CHỌN: SAVE/LOAD THỦ CÔNG LÊN DRIVE ============ */
+// ✅ ĐIỂM SỬA CHÍNH: nhận state từ body (nếu có) rồi ghi lên Drive.
+//    Trước đây route này chỉ load lại state hiện có rồi ghi lại.
 app.post("/api/drive/save", async (req, res) => {
   const userId = uidFromReq(req, res);
   if (!userId) return;
@@ -352,20 +354,27 @@ app.post("/api/drive/save", async (req, res) => {
   }
 
   try {
-    // lấy state hiện tại (Drive làm chuẩn; nếu chưa có, dùng local)
-    let current;
-    try {
-      current = await loadFromDrive(userId);
-    } catch {
-      current = { state: LOCAL_STATE, version: LOCAL_VERSION, etag: LOCAL_ETAG };
+    const ifMatch = req.get("If-Match") || "";
+    let nextState = req.body?.state; // <-- nhận từ FE
+
+    // Nếu FE không gửi state, fallback sang state hiện có (để không lỗi).
+    if (!nextState || typeof nextState !== "object") {
+      try {
+        const current = await loadFromDrive(userId);
+        nextState = current.state;
+      } catch {
+        nextState = LOCAL_STATE;
+      }
     }
 
-    const saved = await saveToDrive(userId, current.state, current.etag);
+    const saved = await saveToDrive(userId, nextState, ifMatch);
     if (saved?.conflict) {
       return res.status(409).json({ ok: false, error: "conflict", current: saved.current });
     }
+    res.set("ETag", saved.etag);
     res.json({ ok: true, version: saved.version });
   } catch (e) {
+    console.error("saveToDrive error:", e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
