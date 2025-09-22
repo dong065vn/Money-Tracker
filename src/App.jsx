@@ -655,60 +655,90 @@ export default function App() {
 };
 
 
-  const saveToDrive = async (members, txs) => {
+const saveToDrive = async () => {
   if (!SYNC_URL) {
     alert("Chưa cấu hình VITE_SYNC_URL");
     return;
   }
-
   try {
-    const payload = { state: { members: members ?? [], transactions: txs ?? [] } };
+    // 1) Làm sạch members
+    const safeMembers = (members || []).map((m) => ({
+      id: m?.id,
+      name: typeof m?.name === "string" ? m.name : String(m?.name ?? ""),
+      color: typeof m?.color === "string" ? m.color : "#4f46e5",
+    }));
+
+    // 2) Làm sạch transactions (chỉ giữ field cần thiết)
+    const safeTxs = (txs || []).map((t) => {
+      const clean = {
+        id: t?.id,
+        payer: Number(t?.payer || 0),
+        total: Number(t?.total || 0),
+        participants: Array.isArray(t?.participants)
+          ? t.participants.map((x) => Number(x))
+          : [],
+        mode: t?.mode === "weights" || t?.mode === "explicit" ? t.mode : "equal",
+        note: typeof t?.note === "string" ? t.note : "",
+        ts: typeof t?.ts === "string" ? t.ts : new Date().toISOString(),
+      };
+
+      if (t?.mode === "weights" && t?.weights && typeof t.weights === "object") {
+        const w = {};
+        Object.entries(t.weights).forEach(([k, v]) => (w[k] = Number(v) || 0));
+        clean.weights = w;
+      }
+      if (t?.mode === "explicit" && t?.shares && typeof t.shares === "object") {
+        const s = {};
+        Object.entries(t.shares).forEach(([k, v]) => (s[k] = Number(v) || 0));
+        clean.shares = s;
+      }
+      if (Array.isArray(t?.paid)) {
+        clean.paid = t.paid.map((x) => Number(x));
+      }
+
+      return clean;
+    });
+
+    const payload = { state: { members: safeMembers, transactions: safeTxs } };
 
     const r = await fetch(`${SYNC_URL}/api/drive/save`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/json",
         "x-user-id": USER_ID,
-        "x-api-key": (import.meta.env.VITE_SYNC_KEY || "").trim(),
+        "x-api-key": import.meta.env.VITE_SYNC_KEY || "",
+        Accept: "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload), // LÚC NÀY đã “sạch”, không còn vòng tham chiếu
     });
 
-    // Cố gắng lấy JSON nếu có
     let out = null;
     try {
       out = await r.json();
-    } catch (_) {
-      // no-op: một số lỗi 500 có thể không trả JSON
-    }
+    } catch (_) {}
 
     if (!r.ok || out?.ok === false) {
       const status = r.status;
       const msg = out?.error || `save_failed (${status})`;
 
-      // Trường hợp phổ biến: chưa liên kết Drive -> server trả no_token
-      if (String(msg).includes("no_token") || status === 401) {
-        alert("Bạn chưa liên kết Google Drive hoặc phiên đăng nhập Drive đã hết hạn.\nHãy nhấn “Kết nối Google Drive” trước rồi thử lại.");
+      if (status === 401) {
+        alert("Bạn chưa liên kết Google Drive hoặc phiên đã hết hạn. Kết nối lại rồi lưu tiếp.");
         return;
       }
-
-      // Trường hợp API key sai
       if (status === 403) {
         alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY/SYNC_API_KEY (server).");
         return;
       }
 
-      // Các lỗi khác
       console.error("[drive/save] error:", msg);
       alert(`Không thể lưu lên Drive: ${msg}`);
       return;
     }
 
-    alert("Đã lưu dữ liệu hiện tại lên Google Drive.");
+    alert("Đã lưu lên Google Drive.");
   } catch (e) {
     console.error("[drive/save] exception:", e);
-    alert("Không thể lưu lên Drive (sự cố mạng hoặc server).");
+    alert("Không thể lưu lên Drive (sự cố dữ liệu hoặc mạng).");
   }
 };
 
