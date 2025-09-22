@@ -18,10 +18,15 @@ const __dirname = path.dirname(__filename);
 /* ============ CONFIG ============ */
 const PORT = process.env.PORT || 3000;
 
-// Cho phép FE gọi CORS (localhost:5173 trong dev)
+// Cho phép FE gọi CORS
+// VD: FRONTEND_ORIGIN=https://money-tracker-opal-sigma.vercel.app
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
 const corsOrigins =
-  FRONTEND_ORIGIN === "http://localhost:5173" ? true : [FRONTEND_ORIGIN];
+  FRONTEND_ORIGIN === "*"
+    ? true
+    : Array.isArray(FRONTEND_ORIGIN)
+    ? FRONTEND_ORIGIN
+    : [FRONTEND_ORIGIN];
 
 // (tùy chọn) API key nếu muốn khóa ghi server
 const API_KEY = process.env.API_KEY || "";
@@ -35,6 +40,7 @@ const OAUTH_REDIRECT_URL =
 
 // Lưu ở appDataFolder (kín) hoặc ở drive thường
 const DRIVE_MODE = process.env.DRIVE_MODE || "appDataFolder"; // "appDataFolder" | "drive"
+// Nếu bật true thì user buộc phải liên kết Google trước khi dùng /api/state
 const REQUIRE_USER_LINK = String(process.env.REQUIRE_USER_LINK || "false") === "true";
 
 // Tên file mặc định lưu trên Drive cho mỗi user
@@ -56,7 +62,7 @@ app.use(
   })
 );
 
-/* ============ LOCAL FALLBACK STORE (giữ tương thích ngược) ============ */
+/* ============ LOCAL FALLBACK STORE ============ */
 let LOCAL_STATE = { members: [], transactions: [] };
 let LOCAL_VERSION = 0;
 let LOCAL_ETAG = `"v${LOCAL_VERSION}"`;
@@ -80,8 +86,6 @@ function persistLocal() {
     "utf8"
   );
 }
-
-const newEtag = () => `"${crypto.randomBytes(8).toString("hex")}"`;
 
 /* ============ TOKEN STORE (per-user) ============ */
 function readTokens() {
@@ -173,7 +177,7 @@ async function saveToDrive(userId, nextState, ifMatch) {
 
   const { fileId, state, version, etag } = await loadFromDrive(userId);
   if (ifMatch && ifMatch !== etag) {
-    return { conflict: true, current: { state, version, etag } };
+    return { conflict: true, current: { state, version, etag} };
   }
   const drive = getDriveClient(oauth2);
   const nextVersion = version + 1;
@@ -183,28 +187,38 @@ async function saveToDrive(userId, nextState, ifMatch) {
     fileId,
     media: { mimeType: "application/json", body: JSON.stringify(nextBody) },
   });
-  const newEtag = `"v${nextVersion}"`;
-  return { ok: true, version: nextVersion, etag: newEtag };
+  const newEtagVal = `"v${nextVersion}"`;
+  return { ok: true, version: nextVersion, etag: newEtagVal };
 }
 
 /* ============ UTILS ============ */
-function uidFromReq(req, res) {
-  const uid = req.header("x-user-id");
+// Lấy userId từ header x-user-id HOẶC query ?user= (để hợp với cách bạn đang gọi)
+function uidFromReq(req, res, { allowQuery = true } = {}) {
+  const headerUid = req.get("x-user-id");
+  const queryUid = allowQuery ? (req.query.user || req.query.uid) : null;
+  const uid = (headerUid || queryUid || "").toString().trim();
   if (!uid) {
     res.status(400).json({ error: "Missing x-user-id" });
     return null;
   }
-  return String(uid);
+  return uid;
 }
 
 /* ============ OAUTH ENDPOINTS ============ */
 // FE gọi để lấy URL liên kết Drive
 app.get("/api/auth/url", (req, res) => {
-  const userId = uidFromReq(req, res);
+  // chấp nhận ?user=... hoặc header x-user-id
+  const userId = uidFromReq(req, res, { allowQuery: true });
   if (!userId) return;
 
   const oauth2 = getOAuth2Client();
-  if (!oauth2) return res.status(500).json({ error: "oauth_not_configured" });
+  if (!oauth2) {
+    // Chưa cấu hình Google → trả về URL mock để test
+    const mockUrl = `${req.protocol}://${req.get("host")}/mock-oauth?user=${encodeURIComponent(
+      userId
+    )}`;
+    return res.json({ url: mockUrl, mock: true });
+  }
 
   const scopes =
     DRIVE_MODE === "appDataFolder"
@@ -228,16 +242,27 @@ app.get("/api/oauth2callback", async (req, res) => {
     if (!code || !state) return res.status(400).send("Missing code/state");
 
     const oauth2 = getOAuth2Client();
+    if (!oauth2) return res.status(500).send("OAuth not configured");
+
     const { tokens } = await oauth2.getToken(code);
     saveUserToken(state, tokens);
 
-    res
-      .status(200)
-      .send("✅ Kết nối Google Drive thành công. Bạn có thể đóng tab này.");
+    res.status(200).send("✅ Kết nối Google Drive thành công. Bạn có thể đóng tab này.");
   } catch (e) {
     console.error(e);
     res.status(500).send("OAuth error");
   }
+});
+
+// Trang mock để test khi chưa cấu hình Google (tùy chọn)
+app.get("/mock-oauth", (req, res) => {
+  const user = String(req.query.user || "");
+  if (!user) return res.status(400).send("Missing user");
+  // giả lập: lưu “token” mock
+  saveUserToken(user, { access_token: "mock", expiry_date: Date.now() + 3600 * 1000 });
+  res.send(
+    `<h1>Mock OAuth</h1><p>Đây là trang giả lập. Đã “liên kết” user: <b>${user}</b>.<br>Đóng tab và quay lại ứng dụng.</p>`
+  );
 });
 
 /* ============ HEALTH ============ */
@@ -245,7 +270,8 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* ============ STATE APIS (Drive là nguồn chính, fallback local) ============ */
 app.get("/api/state", async (req, res) => {
-  const userId = req.get("x-user-id");
+  const userId =
+    req.get("x-user-id") || req.query.user || req.query.uid || ""; // linh hoạt source uid
 
   if (REQUIRE_USER_LINK && !getUserToken(userId)) {
     return res.status(401).json({ error: "not_linked" });
@@ -276,7 +302,7 @@ app.put("/api/state", async (req, res) => {
     return res.status(403).json({ error: "forbidden" });
   }
 
-  const userId = req.get("x-user-id");
+  const userId = req.get("x-user-id") || req.query.user || req.query.uid || "";
   const ifMatch = req.get("If-Match") || "";
   const next = req.body.state;
 
@@ -325,15 +351,13 @@ app.put("/api/state", async (req, res) => {
 });
 
 /* ============ TÙY CHỌN: SAVE/LOAD THỦ CÔNG LÊN DRIVE ============ */
-// dành cho nút “Lưu lên Drive” / “Tải từ Drive” nếu bạn vẫn muốn giữ
 app.post("/api/drive/save", async (req, res) => {
-  const userId = uidFromReq(req, res);
+  const userId = uidFromReq(req, res, { allowQuery: true });
   if (!userId) return;
 
   if (!getUserToken(userId)) return res.status(401).json({ ok: false, error: "Chưa kết nối Google Drive" });
 
   try {
-    // lấy state hiện tại (Drive làm chuẩn; nếu chưa có, dùng local)
     let current;
     try {
       current = await loadFromDrive(userId);
@@ -352,14 +376,13 @@ app.post("/api/drive/save", async (req, res) => {
 });
 
 app.get("/api/drive/load", async (req, res) => {
-  const userId = uidFromReq(req, res);
+  const userId = uidFromReq(req, res, { allowQuery: true });
   if (!userId) return;
 
   if (!getUserToken(userId)) return res.status(401).json({ ok: false, error: "Chưa kết nối Google Drive" });
 
   try {
     const { state, version, etag } = await loadFromDrive(userId);
-    // không update local, vì Drive đã là nguồn chính cho /api/state
     res.set("ETag", etag);
     res.json({ ok: true, version, state });
   } catch (e) {
