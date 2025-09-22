@@ -1,6 +1,6 @@
 // server.js — ESM
 // ===============================
-// Sync API + Google Drive (per-user)
+// MoneyTracker Sync API + Google Drive (per-user)
 // ===============================
 import "dotenv/config";
 import express from "express";
@@ -15,22 +15,22 @@ import { google } from "googleapis";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/* ============ CONFIG ============ */
+/* ============ CONFIG (.env) ============ */
 const PORT = process.env.PORT || 3000;
 
-// Cho phép FE gọi CORS (nhiều origin)
+// CORS: cho phép FE gọi (hỗ trợ nhiều origin, phân tách dấu phẩy)
 const DEFAULT_ORIGINS = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "https://money-tracker-opal-sigma.vercel.app",
 ];
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || ""; // có thể truyền 1 hoặc nhiều, phân tách dấu phẩy
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || ""; // ví dụ: "https://app1.com,https://app2.com"
 const EXTRA_ORIGINS = FRONTEND_ORIGIN
   ? FRONTEND_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean)
   : [];
 const ALLOWED_ORIGINS = Array.from(new Set([...DEFAULT_ORIGINS, ...EXTRA_ORIGINS]));
 
-// (tùy chọn) API key nếu muốn khóa ghi server
+// (tùy chọn) API key khóa ghi server
 const API_KEY = process.env.API_KEY || "";
 
 // Google OAuth
@@ -38,14 +38,15 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 // ví dụ: https://<your-domain>/api/oauth2callback
 const OAUTH_REDIRECT_URL =
-  process.env.GOOGLE_REDIRECT_URI || process.env.OAUTH_REDIRECT_URL || "";
+  process.env.GOOGLE_REDIRECT_URL || process.env.OAUTH_REDIRECT_URL || process.env.OAUTH_REDIRECT || "";
 
-// Lưu ở appDataFolder (kín) hoặc ở drive thường
+// Drive mode + policy
 const DRIVE_MODE = process.env.DRIVE_MODE || "appDataFolder"; // "appDataFolder" | "drive"
 const REQUIRE_USER_LINK = String(process.env.REQUIRE_USER_LINK || "false") === "true";
 
-// Tên file mặc định lưu trên Drive cho mỗi user
-const DRIVE_FILENAME = "moneytracker_state.json";
+// Tên file lưu trên Drive
+const DRIVE_FILE_PREFIX = process.env.DRIVE_FILE_PREFIX || ""; // tuỳ chọn, ví dụ "moneytracker_"
+const DRIVE_FILENAME_BASE = "moneytracker_state.json";
 
 // Fallback tương thích ngược: dữ liệu local
 const LOCAL_DATA_FILE = path.join(__dirname, "data.json");
@@ -63,7 +64,8 @@ app.use(
     origin(origin, cb) {
       // Cho phép tools không có Origin (curl/health checks)
       if (!origin) return cb(null, true);
-      return cb(null, ALLOWED_ORIGINS.includes(origin));
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error(`CORS blocked for origin: ${origin}`));
     },
     credentials: false,
   })
@@ -71,7 +73,7 @@ app.use(
 // preflight
 app.options("*", cors());
 
-/* ============ LOCAL FALLBACK STORE (giữ tương thích ngược) ============ */
+/* ============ LOCAL FALLBACK STORE ============ */
 let LOCAL_STATE = { members: [], transactions: [] };
 let LOCAL_VERSION = 0;
 let LOCAL_ETAG = `"v${LOCAL_VERSION}"`;
@@ -85,7 +87,7 @@ try {
     LOCAL_ETAG = `"v${LOCAL_VERSION}"`;
   }
 } catch {
-  // ignore
+  // ignore nếu chưa có file
 }
 
 function persistLocal() {
@@ -119,6 +121,13 @@ function saveUserToken(userId, tokens) {
   all[userId] = tokens;
   writeTokens(all);
 }
+function deleteUserToken(userId) {
+  const all = readTokens();
+  if (all[userId]) {
+    delete all[userId];
+    writeTokens(all);
+  }
+}
 
 /* ============ GOOGLE OAUTH + DRIVE HELPERS ============ */
 function getOAuth2Client(userId) {
@@ -135,19 +144,21 @@ function getOAuth2Client(userId) {
 function getDriveClient(oauth2) {
   return google.drive({ version: "v3", auth: oauth2 });
 }
-app.post("/api/auth/reset", (req, res) => {
-  const uid = req.header("x-user-id");
-  if (!uid) return res.status(400).json({ error: "Missing x-user-id" });
-  tokenStore.delete(uid);
-  return res.json({ ok: true });
-});
+function driveFilenameForUser(userId) {
+  // Nếu muốn đặt theo userId → dùng prefix kèm userId
+  // Nếu muốn 1 file cố định trong appData của từng tài khoản Drive → chỉ dùng base.
+  return DRIVE_FILE_PREFIX
+    ? `${DRIVE_FILE_PREFIX}${String(userId || "").replace(/[^\w.-]/g, "_")}.json`
+    : DRIVE_FILENAME_BASE;
+}
 
 // Tìm (hoặc tạo) file của user
-async function ensureUserFile(drive) {
+async function ensureUserFile(drive, userId) {
+  const name = driveFilenameForUser(userId);
   const q =
     DRIVE_MODE === "appDataFolder"
-      ? `name='${DRIVE_FILENAME}' and 'appDataFolder' in parents`
-      : `name='${DRIVE_FILENAME}' and trashed=false`;
+      ? `name='${name}' and 'appDataFolder' in parents`
+      : `name='${name}' and trashed=false`;
 
   const { data } = await drive.files.list({
     q,
@@ -157,8 +168,8 @@ async function ensureUserFile(drive) {
 
   const fileMeta =
     DRIVE_MODE === "appDataFolder"
-      ? { name: DRIVE_FILENAME, parents: ["appDataFolder"] }
-      : { name: DRIVE_FILENAME };
+      ? { name, parents: ["appDataFolder"] }
+      : { name };
 
   const body = JSON.stringify({ state: { members: [], transactions: [] }, version: 0 });
   const created = await drive.files.create({
@@ -175,7 +186,7 @@ async function loadFromDrive(userId) {
   if (!oauth2.credentials || !oauth2.credentials.access_token) throw new Error("not_linked");
 
   const drive = getDriveClient(oauth2);
-  const file = await ensureUserFile(drive);
+  const file = await ensureUserFile(drive, userId);
 
   const res = await drive.files.get(
     { fileId: file.id, alt: "media" },
@@ -255,13 +266,20 @@ app.get("/api/oauth2callback", async (req, res) => {
     const { tokens } = await oauth2.getToken(code);
     saveUserToken(state, tokens);
 
-    res
-      .status(200)
-      .send("✅ Kết nối Google Drive thành công. Bạn có thể đóng tab này.");
+    res.status(200).send("✅ Kết nối Google Drive thành công. Bạn có thể đóng tab này.");
   } catch (e) {
     console.error(e);
     res.status(500).send("OAuth error");
   }
+});
+
+// Ngắt liên kết (xoá token của user)
+app.post("/api/auth/reset", (req, res) => {
+  const uid = req.header("x-user-id");
+  if (!uid) return res.status(400).json({ error: "Missing x-user-id" });
+
+  deleteUserToken(String(uid));
+  return res.json({ ok: true });
 });
 
 /* ============ HEALTH ============ */
@@ -348,9 +366,8 @@ app.put("/api/state", async (req, res) => {
   res.json({ ok: true, version: LOCAL_VERSION });
 });
 
-/* ============ TÙY CHỌN: SAVE/LOAD THỦ CÔNG LÊN DRIVE ============ */
-// ✅ ĐIỂM SỬA CHÍNH: nhận state từ body (nếu có) rồi ghi lên Drive.
-//    Trước đây route này chỉ load lại state hiện có rồi ghi lại.
+/* ============ SAVE/LOAD THỦ CÔNG LÊN DRIVE ============ */
+// SAVE: nhận state từ body rồi ghi lên Drive; nếu thiếu thì fallback state hiện có
 app.post("/api/drive/save", async (req, res) => {
   const userId = uidFromReq(req, res);
   if (!userId) return;
@@ -361,9 +378,8 @@ app.post("/api/drive/save", async (req, res) => {
 
   try {
     const ifMatch = req.get("If-Match") || "";
-    let nextState = req.body?.state; // <-- nhận từ FE
+    let nextState = req.body?.state;
 
-    // Nếu FE không gửi state, fallback sang state hiện có (để không lỗi).
     if (!nextState || typeof nextState !== "object") {
       try {
         const current = await loadFromDrive(userId);
@@ -408,5 +424,6 @@ app.get("/", (_req, res) => res.send("MoneyTracker Sync Server running"));
 /* ============ START ============ */
 app.listen(PORT, () => {
   console.log("✅ sync-server running on", PORT);
-  console.log("CORS allowed origins:", ALLOWED_ORIGINS.join(", "));
+  console.log("CORS allowed origins:");
+  ALLOWED_ORIGINS.forEach((o) => console.log("  -", o));
 });
