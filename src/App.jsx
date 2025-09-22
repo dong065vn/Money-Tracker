@@ -653,15 +653,18 @@ export default function App() {
     alert("Không thể tải từ Drive (sự cố mạng hoặc server).");
   }
 };
+console.log("members example", members?.[0]);
+console.log("tx example", txs?.[0]);
 
 
+// ---- SAVE lên Drive: làm sạch state trước khi stringify ----
 const saveToDrive = async () => {
   if (!SYNC_URL) {
     alert("Chưa cấu hình VITE_SYNC_URL");
     return;
   }
   try {
-    // 1) Làm sạch members
+    // 1) Làm sạch members (chỉ giữ field thuần)
     const safeMembers = (members || []).map((m) => ({
       id: m?.id,
       name: typeof m?.name === "string" ? m.name : String(m?.name ?? ""),
@@ -701,6 +704,9 @@ const saveToDrive = async () => {
 
     const payload = { state: { members: safeMembers, transactions: safeTxs } };
 
+    // Debug: xem data trước khi gửi
+    console.log("[drive/save] payload", payload);
+
     const r = await fetch(`${SYNC_URL}/api/drive/save`, {
       method: "POST",
       headers: {
@@ -709,13 +715,11 @@ const saveToDrive = async () => {
         "x-api-key": import.meta.env.VITE_SYNC_KEY || "",
         Accept: "application/json",
       },
-      body: JSON.stringify(payload), // LÚC NÀY đã “sạch”, không còn vòng tham chiếu
+      body: JSON.stringify(payload),
     });
 
     let out = null;
-    try {
-      out = await r.json();
-    } catch (_) {}
+    try { out = await r.json(); } catch (_) {}
 
     if (!r.ok || out?.ok === false) {
       const status = r.status;
@@ -741,6 +745,7 @@ const saveToDrive = async () => {
     alert("Không thể lưu lên Drive (sự cố dữ liệu hoặc mạng).");
   }
 };
+
 
 
   /* =========================
