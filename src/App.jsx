@@ -590,6 +590,52 @@ export default function App() {
   };
 
   /* =========================
+     Google Drive Sync helpers (LOAD/SAVE)
+     ========================= */
+  const loadFromDrive = async () => {
+    if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
+    try {
+      const r = await fetch(`${SYNC_URL}/api/drive/load`, {
+        headers: { "x-user-id": USER_ID },
+      });
+      if (!r.ok) throw new Error("drive load failed");
+      const data = await r.json();
+      if (data?.state) {
+        const m = Array.isArray(data.state.members) ? data.state.members : [];
+        const t = Array.isArray(data.state.transactions) ? data.state.transactions : [];
+        setMembers(m);
+        setTxs(t);
+        setVersion(data.version || 0);
+        setEtag(data.etag || null);
+        alert("Đã đồng bộ từ Drive.");
+      } else {
+        alert("Không tìm thấy dữ liệu hợp lệ trên Drive.");
+      }
+    } catch (e) {
+      alert("Không thể tải từ Drive (server chưa hỗ trợ /api/drive/load?).");
+    }
+  };
+
+  const saveToDrive = async () => {
+    if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
+    try {
+      const r = await fetch(`${SYNC_URL}/api/drive/save`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": USER_ID,
+          "x-api-key": SYNC_KEY || "",
+        },
+        body: JSON.stringify({ state: { members, transactions: txs } }),
+      });
+      if (!r.ok) throw new Error("drive save failed");
+      alert("Đã lưu dữ liệu hiện tại lên Drive.");
+    } catch (e) {
+      alert("Không thể lưu lên Drive (server chưa hỗ trợ /api/drive/save?).");
+    }
+  };
+
+  /* =========================
      Mobile Bottom Nav
      ========================= */
   const [tab, setTab] = useState("tx"); // tx | members | summary | charts | settings
@@ -611,6 +657,8 @@ export default function App() {
           </div>
           <div className="hidden sm:flex items-center gap-2">
             <Button variant="ghost" onClick={connectDrive}>Kết nối Google Drive</Button>
+            <Button variant="ghost" onClick={loadFromDrive}>Đồng bộ từ Drive</Button>
+            <Button variant="ghost" onClick={saveToDrive}>Lưu lên Drive</Button>
             <Button variant="subtle" onClick={downloadJSON}>Sao lưu</Button>
             <label className="inline-flex items-center rounded-xl px-3 py-2 text-sm cursor-pointer border bg-slate-900/70 border-slate-700">
               Import JSON
@@ -959,6 +1007,8 @@ export default function App() {
             <Card title="Cài đặt & Dữ liệu" action={null}>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Button variant="ghost" onClick={connectDrive}>Kết nối Google Drive</Button>
+                <Button variant="ghost" onClick={loadFromDrive}>Đồng bộ từ Drive</Button>
+                <Button variant="ghost" onClick={saveToDrive}>Lưu lên Drive</Button>
                 <Button variant="subtle" onClick={downloadJSON}>Sao lưu JSON</Button>
                 <label className="inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm cursor-pointer border bg-slate-900/70 border-slate-700">
                   Import JSON
@@ -986,29 +1036,47 @@ export default function App() {
         </div>
       </div>
 
-      {/* Bottom Mobile Nav */}
+      {/* Bottom Mobile Nav (animated) */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-800 bg-slate-950/90 backdrop-blur sm:hidden">
-        <div className="max-w-7xl mx-auto grid grid-cols-5">
-          {[
-            { key: "tx", label: "Lịch sử", icon: "🧾" },
-            { key: "members", label: "Thành viên", icon: "👥" },
-            { key: "summary", label: "Tổng kết", icon: "✅" },
-            { key: "charts", label: "Charts", icon: "📊" },
-            { key: "settings", label: "Cài đặt", icon: "⚙️" },
-          ].map((it) => {
-            const active = tab === it.key;
-            return (
-              <button
-                key={it.key}
-                onClick={() => setTab(it.key)}
-                className={`py-2.5 text-xs flex flex-col items-center ${active ? "text-indigo-300" : "text-slate-400"}`}
-              >
-                <span className="text-lg">{it.icon}</span>
-                <span>{it.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        {(() => {
+          const items = [
+            { key: "tx",       label: "Lịch sử",  icon: "🧾" },
+            { key: "members",  label: "Thành viên", icon: "👥" },
+            { key: "summary",  label: "Tổng kết", icon: "✅" },
+            { key: "charts",   label: "Charts",   icon: "📊" },
+            { key: "settings", label: "Cài đặt",  icon: "⚙️" },
+          ];
+          const idx = Math.max(0, items.findIndex(i => i.key === tab));
+          const widthPct = 100 / items.length;
+          const leftPct  = idx * widthPct;
+
+          return (
+            <div className="relative max-w-7xl mx-auto">
+              {/* Animated indicator */}
+              <div
+                className="absolute bottom-0 h-0.5 bg-indigo-400 transition-all duration-300 ease-out"
+                style={{ width: `${widthPct}%`, left: `${leftPct}%` }}
+              />
+              <div className="grid" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+                {items.map((it) => {
+                  const active = tab === it.key;
+                  return (
+                    <button
+                      key={it.key}
+                      onClick={() => setTab(it.key)}
+                      className={`py-2.5 text-xs flex flex-col items-center transition-all duration-200 ${
+                        active ? "text-indigo-300 scale-105" : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      <span className="text-lg">{it.icon}</span>
+                      <span>{it.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
       </nav>
 
       <footer className="py-10 text-center text-xs text-slate-500">
