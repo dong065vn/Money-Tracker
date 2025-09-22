@@ -1,6 +1,7 @@
 {
-  "name": "money-tracker-sync-server",
+  "name": "moneytracker-sync-server",
   "version": "1.0.0",
+  "description": "MoneyTracker Sync Server with Google Drive integration",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -10,9 +11,13 @@
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "googleapis": "^131.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=18.0.0"
   }
 }
