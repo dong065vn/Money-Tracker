@@ -37,7 +37,8 @@ const toInt = (v) => {
   const n = parseInt(s || "0", 10);
   return isNaN(n) ? 0 : Math.trunc(n);
 };
-const toVND = (n) => (n ?? 0).toLocaleString("vi-VN", { maximumFractionDigits: 0 }) + " ₫";
+const toVND = (n) =>
+  (n ?? 0).toLocaleString("vi-VN", { maximumFractionDigits: 0 }) + " ₫";
 
 /* =========================
    Core: chia tiền & tính toán (theo form yêu cầu)
@@ -89,23 +90,29 @@ function computeShares(tx) {
   return splitEqual(total, ps);
 }
 
-// Balances & owes (trace từng giao dịch)
+/* =========================
+   Balances & owes (CHỈ tính khoản CHƯA TRẢ)
+   - Nếu participant đã "đánh dấu đã trả", khoản đó không tính vào balances/owes.
+   ========================= */
 function computeBalancesAndOwes(transactions) {
-  const balances = {};
-  const owes = []; // {from,to,amount,tx}
+  const balances = {};        // {memberId: amount}
+  const owes = [];            // [{from,to,amount,tx}]
 
   for (const tx of transactions) {
-    const total = toInt(tx.total);
     const shares = computeShares(tx);
+    const paidSet = new Set(tx.paid || []);
 
-    balances[tx.payer] = (balances[tx.payer] ?? 0) + total;
+    for (const [uidStr, share] of Object.entries(shares)) {
+      const u = Number(uidStr);
+      if (u === tx.payer) continue;           // chính payer thì bỏ
+      if (paidSet.has(u)) continue;           // đã trả thì bỏ
+      if (share <= 0) continue;
 
-    Object.entries(shares).forEach(([u, share]) => {
-      balances[u] = (balances[u] ?? 0) - share;
-      if (u !== tx.payer && share > 0) {
-        owes.push({ from: u, to: tx.payer, amount: share, tx: tx.id });
-      }
-    });
+      // chỉ cộng TRÊN KHOẢN CHƯA TRẢ
+      balances[tx.payer] = (balances[tx.payer] ?? 0) + share; // sẽ được nhận
+      balances[u] = (balances[u] ?? 0) - share;               // đang nợ
+      owes.push({ from: u, to: tx.payer, amount: share, tx: tx.id });
+    }
   }
   return { balances, owes };
 }
@@ -122,7 +129,8 @@ function settleGreedy(balances) {
   debtors.sort((a, b) => b.amt - a.amt);
 
   const transfers = [];
-  let i = 0, j = 0;
+  let i = 0,
+    j = 0;
   while (i < debtors.length && j < creditors.length) {
     const x = Math.min(debtors[i].amt, creditors[j].amt);
     if (x > 0) transfers.push({ from: debtors[i].name, to: creditors[j].name, amount: x });
@@ -137,25 +145,19 @@ function settleGreedy(balances) {
 /* =========================
    Storage (localStorage)
    ========================= */
-const LS_MEMBERS = "mt_members_v2"; // v2 để tách dữ liệu cũ
+const LS_MEMBERS = "mt_members_v2";
 const LS_TXS = "mt_transactions_v2";
 const loadMembers = () => {
-  try {
-    const s = localStorage.getItem(LS_MEMBERS);
-    return s ? JSON.parse(s) : [];
-  } catch { return []; }
+  try { const s = localStorage.getItem(LS_MEMBERS); return s ? JSON.parse(s) : []; } catch { return []; }
 };
 const saveMembers = (arr) => localStorage.setItem(LS_MEMBERS, JSON.stringify(arr));
 const loadTxs = () => {
-  try {
-    const s = localStorage.getItem(LS_TXS);
-    return s ? JSON.parse(s) : [];
-  } catch { return []; }
+  try { const s = localStorage.getItem(LS_TXS); return s ? JSON.parse(s) : []; } catch { return []; }
 };
 const saveTxs = (arr) => localStorage.setItem(LS_TXS, JSON.stringify(arr));
 
 /* =========================
-   SYNC helpers (giữ từ code 1)
+   SYNC helpers
    ========================= */
 async function pullRemote() {
   if (!SYNC_URL) return null;
@@ -167,7 +169,6 @@ async function pullRemote() {
   const json = await res.json();
   return { ...json, etag };
 }
-
 async function pushRemote(state, etag) {
   if (!SYNC_URL) return null;
   const res = await fetch(`${SYNC_URL}/api/state`, {
@@ -247,11 +248,11 @@ function Card({ title, action, children }) {
    APP
    ========================= */
 export default function App() {
-  // Theme (dark fixed cho gọn)
+  // Theme (dark fixed)
   const pageBg = "bg-slate-950";
   const pageText = "text-slate-100";
 
-  // Members (object dạng {id,name,color})
+  // Members
   const [members, setMembers] = useState(() => {
     const local = loadMembers();
     if (Array.isArray(local) && local.length) return local;
@@ -262,8 +263,8 @@ export default function App() {
   });
   const [memberInput, setMemberInput] = useState("");
 
-  // Transactions (theo thuật toán mới)
-  // tx = { id, payer: memberId, total, participants: [memberId], mode: 'equal'|'weights'|'explicit', weights?, shares?, note, ts }
+  // Transactions (tx.paid: memberId[] đã trả)
+  // tx = { id, payer: memberId, total, participants:[memberId], mode:'equal'|'weights'|'explicit', weights?, shares?, paid?:[], note, ts }
   const [txs, setTxs] = useState(() => loadTxs());
 
   // Sync states
@@ -333,52 +334,49 @@ export default function App() {
     return () => clearInterval(t);
   }, [version]);
 
-  // ===== Derived from transactions (map id<->name) =====
+  // ===== Derived =====
   const idToName = useMemo(() => {
     const m = new Map();
     members.forEach((x) => m.set(x.id, x.name));
     return m;
   }, [members]);
 
-  // Chuyển đổi tx cho computeShares (dùng memberId)
   const normalizedTxs = useMemo(() => {
     return txs.map((t) => ({
       ...t,
       participants: (t.participants || []).filter((pid) => members.some((m) => m.id === pid)),
       payer: members.some((m) => m.id === t.payer) ? t.payer : (members[0]?.id ?? 0),
+      paid: Array.isArray(t.paid) ? t.paid.filter((pid) => members.some((m) => m.id === pid)) : [],
+      total: toInt(t.total),
     }));
   }, [txs, members]);
 
-  const { balances, owes } = useMemo(() => {
-    // computeBalancesAndOwes dùng key là memberId
-    const converted = normalizedTxs.map((t) => ({
-      ...t,
-      // đảm bảo number int
-      total: toInt(t.total),
-    }));
-    return computeBalancesAndOwes(converted);
-  }, [normalizedTxs]);
+  const { balances, owes } = useMemo(() => computeBalancesAndOwes(normalizedTxs), [normalizedTxs]);
 
-  const balancesList = useMemo(() => {
-    // chuyển {memberId: amount} -> [{id,name,amount}]
-    return Object.entries(balances).map(([id, amt]) => ({
-      id: Number(id),
-      name: idToName.get(Number(id)) ?? `#${id}`,
-      amount: amt,
-    })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [balances, idToName]);
+  const balancesList = useMemo(
+    () =>
+      Object.entries(balances)
+        .map(([id, amt]) => ({ id: Number(id), name: idToName.get(Number(id)) ?? `#${id}`, amount: amt }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [balances, idToName]
+  );
 
-  const transfers = useMemo(() => {
-    // settleGreedy theo key "name" -> ta dùng name hiển thị, nhưng sẽ tính trên object mapping tạm
-    const nameBalances = {};
-    balancesList.forEach((b) => nameBalances[b.name] = b.amount);
-    return settleGreedy(nameBalances);
+  const nameBalances = useMemo(() => {
+    const obj = {};
+    balancesList.forEach((b) => (obj[b.name] = b.amount));
+    return obj;
   }, [balancesList]);
 
-  const totalCheck = useMemo(
-    () => Object.values(balances).reduce((a, b) => a + b, 0),
-    [balances]
-  );
+  const transfers = useMemo(() => settleGreedy(nameBalances), [nameBalances]);
+
+  const totalCheck = useMemo(() => Object.values(balances).reduce((a, b) => a + b, 0), [balances]);
+
+  // Tổng chi theo người trả (để vẽ chart)
+  const spentByPayer = useMemo(() => {
+    const map = new Map();
+    normalizedTxs.forEach((t) => map.set(t.payer, (map.get(t.payer) || 0) + toInt(t.total)));
+    return members.map((m) => ({ id: m.id, name: m.name, total: map.get(m.id) || 0 }));
+  }, [normalizedTxs, members]);
 
   /* =========================
      Actions (Members)
@@ -391,7 +389,7 @@ export default function App() {
       return;
     }
     const id = Date.now();
-    const colors = ["#4f46e5","#22d3ee","#06b6d4","#0ea5e9","#a78bfa","#6366f1","#2dd4bf","#38bdf8"];
+    const colors = ["#4f46e5", "#22d3ee", "#06b6d4", "#0ea5e9", "#a78bfa", "#6366f1", "#2dd4bf", "#38bdf8"];
     const color = colors[members.length % colors.length];
     setMembers([...members, { id, name, color }]);
     setMemberInput("");
@@ -402,24 +400,39 @@ export default function App() {
     const nextMembers = members.filter((m) => m.id !== id);
     setMembers(nextMembers);
 
-    // cập nhật txs: loại khỏi participants, nếu payer là id thì swap sang người đầu
     const remainingIds = nextMembers.map((m) => m.id);
-    setTxs((arr) => arr.map((t) => {
-      const p = (t.participants || []).filter((pid) => pid !== id && remainingIds.includes(pid));
-      const newPayer = t.payer === id ? (p[0] ?? remainingIds[0] ?? 0) : t.payer;
-      const patch = { ...t, participants: p, payer: newPayer };
-      if (t.mode === "weights" && t.weights) {
-        const w = { ...t.weights };
-        delete w[id];
-        patch.weights = w;
-      }
-      if (t.mode === "explicit" && t.shares) {
-        const s = { ...t.shares };
-        delete s[id];
-        patch.shares = s;
-      }
-      return patch;
-    }));
+    setTxs((arr) =>
+      arr.map((t) => {
+        const p = (t.participants || []).filter((pid) => pid !== id && remainingIds.includes(pid));
+        const paid = (t.paid || []).filter((pid) => pid !== id && remainingIds.includes(pid));
+        const newPayer = t.payer === id ? (p[0] ?? remainingIds[0] ?? 0) : t.payer;
+        const patch = { ...t, participants: p, paid, payer: newPayer };
+        if (t.mode === "weights" && t.weights) {
+          const w = { ...t.weights }; delete w[id]; patch.weights = w;
+        }
+        if (t.mode === "explicit" && t.shares) {
+          const s = { ...t.shares }; delete s[id]; patch.shares = s;
+        }
+        return patch;
+      })
+    );
+  };
+
+  // XÓA THÀNH VIÊN KHÔNG THUỘC GIAO DỊCH
+  const removeUnusedMembers = () => {
+    const used = new Set();
+    normalizedTxs.forEach((t) => {
+      used.add(t.payer);
+      (t.participants || []).forEach((pid) => used.add(pid));
+    });
+    const keep = members.filter((m) => used.has(m.id));
+    if (keep.length === members.length) {
+      alert("Không có thành viên thừa.");
+      return;
+    }
+    if (confirm(`Xóa ${members.length - keep.length} thành viên không thuộc giao dịch?`)) {
+      setMembers(keep);
+    }
   };
 
   /* =========================
@@ -429,12 +442,11 @@ export default function App() {
   const [payerDraft, setPayerDraft] = useState(0);
   const [totalDraft, setTotalDraft] = useState("");
   const [participantsDraft, setParticipantsDraft] = useState([]);
-  const [modeDraft, setModeDraft] = useState("equal"); // equal | weights | explicit
+  const [modeDraft, setModeDraft] = useState("equal");
   const [weightsDraft, setWeightsDraft] = useState({});
   const [sharesDraft, setSharesDraft] = useState({});
   const [noteDraft, setNoteDraft] = useState("");
 
-  // auto init payer + participants
   useEffect(() => {
     if (!payerDraft && members[0]?.id) setPayerDraft(members[0].id);
     if (participantsDraft.length === 0) setParticipantsDraft(members.map((m) => m.id));
@@ -442,7 +454,7 @@ export default function App() {
   }, [members.length]);
 
   const toggleParticipantDraft = (id) => {
-    setParticipantsDraft((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+    setParticipantsDraft((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
   const onWeightDraftChange = (id, v) => setWeightsDraft((w) => ({ ...w, [id]: Number(v) }));
   const onShareDraftChange = (id, v) => setSharesDraft((s) => ({ ...s, [id]: toInt(v) }));
@@ -470,11 +482,11 @@ export default function App() {
       mode: modeDraft,
       note: noteDraft.trim(),
       ts: new Date().toISOString(),
+      paid: [], // mặc định chưa ai trả
     };
     if (modeDraft === "weights") tx.weights = { ...weightsDraft };
     if (modeDraft === "explicit") tx.shares = { ...sharesDraft };
 
-    // validate shares
     const shares = computeShares(tx);
     const sumShares = Object.values(shares).reduce((a, b) => a + b, 0);
     if (sumShares !== t) {
@@ -483,7 +495,6 @@ export default function App() {
     }
 
     setTxs((arr) => [tx, ...arr]);
-    // reset
     setTotalDraft("");
     setModeDraft("equal");
     setWeightsDraft({});
@@ -495,6 +506,21 @@ export default function App() {
   const removeTx = (id) => {
     if (!confirm("Xóa giao dịch này?")) return;
     setTxs((arr) => arr.filter((t) => t.id !== id));
+  };
+
+  // ĐÁNH DẤU ĐÃ TRẢ / BỎ ĐÁNH DẤU
+  const togglePaid = (txId, memberId) => {
+    setTxs((prev) =>
+      prev.map((t) => {
+        if (t.id !== txId) return t;
+        if (memberId === t.payer) return t; // payer không cần tick
+        const parts = t.participants || [];
+        if (!parts.includes(memberId)) return t;
+        const set = new Set(t.paid || []);
+        set.has(memberId) ? set.delete(memberId) : set.add(memberId);
+        return { ...t, paid: [...set] };
+      })
+    );
   };
 
   /* =========================
@@ -509,7 +535,6 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
   };
-
   const importJSON = (ev) => {
     const f = ev.target.files?.[0];
     if (!f) return;
@@ -526,13 +551,13 @@ export default function App() {
     };
     r.readAsText(f);
   };
-
   const exportCSV = () => {
-    const rows = [["ID","Time","Payer","Total(VND)","Mode","Participants","Note"]];
+    const rows = [["ID", "Time", "Payer", "Total(VND)", "Mode", "Participants", "Paid", "Note"]];
     for (const t of txs) {
       const payer = idToName.get(t.payer) ?? t.payer;
       const parts = (t.participants || []).map((id) => idToName.get(id) ?? id).join("; ");
-      rows.push([t.id, new Date(t.ts).toLocaleString("vi-VN"), payer, toInt(t.total), t.mode, parts, t.note || ""]);
+      const paid = (t.paid || []).map((id) => idToName.get(id) ?? id).join("; ");
+      rows.push([t.id, new Date(t.ts).toLocaleString("vi-VN"), payer, toInt(t.total), t.mode, parts, paid, t.note || ""]);
     }
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -567,7 +592,7 @@ export default function App() {
   /* =========================
      Mobile Bottom Nav
      ========================= */
-  const [tab, setTab] = useState("tx"); // tx | members | summary | settings
+  const [tab, setTab] = useState("tx"); // tx | members | summary | charts | settings
 
   /* =========================
      UI
@@ -598,15 +623,14 @@ export default function App() {
 
       {/* Body */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 pb-28 grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* LEFT: Add Transaction */}
+        {/* LEFT: Add Transaction + Members */}
         <div className="lg:col-span-1 space-y-6">
-          <Card
-            title="Thêm giao dịch"
-            action={null}
-          >
+          <Card title="Thêm giao dịch" action={null}>
             <div className="grid grid-cols-1 gap-3">
               <Select label="Payer" value={payerDraft} onChange={(e) => setPayerDraft(Number(e.target.value))}>
-                {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
               </Select>
               <Input label="Total (VND)" value={totalDraft} onChange={(e) => setTotalDraft(e.target.value)} placeholder="vd 120000" />
               <Select label="Mode" value={modeDraft} onChange={(e) => setModeDraft(e.target.value)}>
@@ -704,39 +728,45 @@ export default function App() {
                 </div>
               ))}
               {members.length === 0 && <div className="text-sm text-slate-400 text-center py-4">Chưa có thành viên</div>}
+              <div className="pt-2 flex gap-2">
+                <Button variant="subtle" onClick={removeUnusedMembers}>Xóa thành viên không thuộc giao dịch</Button>
+              </div>
             </div>
           </Card>
         </div>
 
-        {/* RIGHT: Tabs content */}
+        {/* RIGHT: Tabs */}
         <div className="lg:col-span-2 space-y-6">
           {/* NAV (desktop) */}
           <Card
             title="Điều hướng"
             action={
               <div className="hidden sm:flex gap-2">
-                <Button variant={tab==="tx"?"primary":"ghost"} onClick={()=>setTab("tx")}>Lịch sử</Button>
-                <Button variant={tab==="members"?"primary":"ghost"} onClick={()=>setTab("members")}>Thành viên</Button>
-                <Button variant={tab==="summary"?"primary":"ghost"} onClick={()=>setTab("summary")}>Tổng kết</Button>
-                <Button variant={tab==="settings"?"primary":"ghost"} onClick={()=>setTab("settings")}>Cài đặt</Button>
+                <Button variant={tab === "tx" ? "primary" : "ghost"} onClick={() => setTab("tx")}>Lịch sử</Button>
+                <Button variant={tab === "members" ? "primary" : "ghost"} onClick={() => setTab("members")}>Thành viên</Button>
+                <Button variant={tab === "summary" ? "primary" : "ghost"} onClick={() => setTab("summary")}>Tổng kết</Button>
+                <Button variant={tab === "charts" ? "primary" : "ghost"} onClick={() => setTab("charts")}>Charts</Button>
+                <Button variant={tab === "settings" ? "primary" : "ghost"} onClick={() => setTab("settings")}>Cài đặt</Button>
               </div>
             }
           >
-            {/* Mobile hint */}
             <div className="text-xs text-slate-400">Tip: Trên mobile dùng thanh điều hướng dưới cùng.</div>
           </Card>
 
           {/* TAB: Transactions */}
           {tab === "tx" && (
-            <Card title={`Giao dịch (${txs.length})`} action={
-              <div className="flex gap-2">
-                <Button variant="ghost" onClick={() => exportCSV()}>Export CSV</Button>
-                <Button variant="danger" onClick={() => { if (confirm("Xóa tất cả giao dịch?")) setTxs([]); }}>Xóa hết</Button>
-              </div>
-            }>
+            <Card
+              title={`Giao dịch (${txs.length})`}
+              action={
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => exportCSV()}>Export CSV</Button>
+                  <Button variant="danger" onClick={() => { if (confirm("Xóa tất cả giao dịch?")) setTxs([]); }}>Xóa hết</Button>
+                </div>
+              }
+            >
               <div className="space-y-3">
                 {txs.length === 0 && <div className="text-sm text-slate-400 text-center py-6">Chưa có giao dịch.</div>}
-                {txs.map((t) => {
+                {normalizedTxs.map((t) => {
                   const parts = (t.participants || []).map((id) => idToName.get(id) ?? id).join(", ");
                   const payerName = idToName.get(t.payer) ?? t.payer;
                   const shares = computeShares(t);
@@ -750,7 +780,35 @@ export default function App() {
                         {new Date(t.ts).toLocaleString("vi-VN")} · Mode: {t.mode} · Payer: <span className="text-slate-200">{payerName}</span>
                       </div>
                       <div className="mt-1 text-xs text-slate-400">Participants: {parts}</div>
-                      <details className="mt-2">
+
+                      {/* ĐÁNH DẤU ĐÃ TRẢ */}
+                      <div className="mt-3">
+                        <div className="text-xs text-slate-400 mb-1">Đánh dấu đã trả</div>
+                        <div className="flex flex-wrap gap-2">
+                          {(t.participants || []).filter((pid) => pid !== t.payer).map((pid) => {
+                            const checked = (t.paid || []).includes(pid);
+                            return (
+                              <label
+                                key={pid}
+                                className={`inline-flex items-center gap-2 px-2.5 py-1.5 rounded-full border text-xs ${
+                                  checked ? "bg-emerald-500/10 border-emerald-400 text-emerald-300" : "border-slate-700 bg-slate-900/70 text-slate-300"
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="accent-emerald-500"
+                                  checked={checked}
+                                  onChange={() => togglePaid(t.id, pid)}
+                                />
+                                {idToName.get(pid)}
+                                <span className="opacity-70">({toVND(shares[pid] || 0)})</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <details className="mt-3">
                         <summary className="cursor-pointer text-emerald-300 hover:underline text-sm">Xem shares</summary>
                         <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
                           {Object.entries(shares).map(([uid, a]) => (
@@ -761,6 +819,7 @@ export default function App() {
                           ))}
                         </div>
                       </details>
+
                       <div className="mt-2 flex items-center justify-end">
                         <Button variant="ghost" onClick={() => removeTx(t.id)}>Xóa</Button>
                       </div>
@@ -771,26 +830,29 @@ export default function App() {
             </Card>
           )}
 
-          {/* TAB: Members */}
+          {/* TAB: Members (balances) */}
           {tab === "members" && (
-            <Card title="Số dư theo thành viên" action={
-              <div className={`text-sm ${totalCheck===0?"text-emerald-300":"text-rose-300"}`}>
-                Tổng kiểm tra: {toVND(totalCheck)}
-              </div>
-            }>
+            <Card
+              title="Số dư theo thành viên (chỉ tính khoản chưa trả)"
+              action={<div className={`text-sm ${totalCheck === 0 ? "text-emerald-300" : "text-rose-300"}`}>Tổng kiểm tra: {toVND(totalCheck)}</div>}
+            >
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {balancesList.map((b) => (
-                  <div key={b.id} className="rounded-xl px-3 py-2 border border-slate-700 bg-slate-900/60 flex items-center justify-between">
-                    <div className="font-medium">{b.name}</div>
-                    <div className={`font-semibold ${b.amount>0?"text-emerald-300":b.amount<0?"text-rose-300":"text-slate-300"}`}>{toVND(b.amount)}</div>
+                  <div key={b.id} className="rounded-xl px-3 py-2 border border-slate-700 bg-slate-900/60">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">{b.name}</div>
+                      <div className={`font-semibold ${b.amount > 0 ? "text-emerald-300" : b.amount < 0 ? "text-rose-300" : "text-slate-300"}`}>
+                        {toVND(b.amount)}
+                      </div>
+                    </div>
                   </div>
                 ))}
-                {balancesList.length===0 && <div className="text-sm text-slate-400">Chưa có dữ liệu.</div>}
+                {balancesList.length === 0 && <div className="text-sm text-slate-400">Chưa có dữ liệu.</div>}
               </div>
             </Card>
           )}
 
-          {/* TAB: Summary */}
+          {/* TAB: Summary (transfers) */}
           {tab === "summary" && (
             <Card title="Gợi ý chuyển tiền (Greedy)" action={null}>
               {transfers.length === 0 ? (
@@ -805,8 +867,89 @@ export default function App() {
                   ))}
                 </ul>
               )}
-              <div className="mt-4 text-xs text-slate-400">
-                * Thuật toán greedy giúp tối giản số lần chuyển, không đảm bảo tối ưu tuyệt đối trong mọi trường hợp — nhưng nhanh và dễ hiểu.
+              <div className="mt-4 text-xs text-slate-400">* Chỉ tính các khoản chưa đánh dấu “đã trả”.</div>
+            </Card>
+          )}
+
+          {/* TAB: Charts */}
+          {tab === "charts" && (
+            <Card title="Charts (CSS-only)" action={null}>
+              {/* Helper bar component */}
+              <div className="space-y-6">
+                {/* Total paid by payer */}
+                <div>
+                  <div className="text-sm mb-2">Tổng chi theo người trả</div>
+                  <div className="space-y-2">
+                    {spentByPayer.map((r) => {
+                      const max = Math.max(1, ...spentByPayer.map((x) => x.total));
+                      const w = Math.round((r.total / max) * 100);
+                      return (
+                        <div key={r.id}>
+                          <div className="flex justify-between text-xs text-slate-400 mb-1">
+                            <span>{r.name}</span>
+                            <span>{toVND(r.total)}</span>
+                          </div>
+                          <div className="h-2 rounded bg-slate-800 overflow-hidden">
+                            <div className="h-2 bg-indigo-600" style={{ width: `${w}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Receivables / Payables */}
+                <div className="grid sm:grid-cols-2 gap-6">
+                  <div>
+                    <div className="text-sm mb-2">Phải thu (dương)</div>
+                    {balancesList.filter((b) => b.amount > 0).length === 0 && (
+                      <div className="text-xs text-slate-400">—</div>
+                    )}
+                    <div className="space-y-2">
+                      {balancesList.filter((b) => b.amount > 0).map((b) => {
+                        const arr = balancesList.filter((x) => x.amount > 0);
+                        const max = Math.max(1, ...arr.map((x) => x.amount));
+                        const w = Math.round((b.amount / max) * 100);
+                        return (
+                          <div key={b.id}>
+                            <div className="flex justify-between text-xs text-slate-400 mb-1">
+                              <span>{b.name}</span>
+                              <span>{toVND(b.amount)}</span>
+                            </div>
+                            <div className="h-2 rounded bg-slate-800 overflow-hidden">
+                              <div className="h-2 bg-emerald-600" style={{ width: `${w}%` }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm mb-2">Phải trả (âm)</div>
+                    {balancesList.filter((b) => b.amount < 0).length === 0 && (
+                      <div className="text-xs text-slate-400">—</div>
+                    )}
+                    <div className="space-y-2">
+                      {balancesList.filter((b) => b.amount < 0).map((b) => {
+                        const arr = balancesList.filter((x) => x.amount < 0).map((x) => ({ ...x, amount: -x.amount }));
+                        const max = Math.max(1, ...arr.map((x) => x.amount));
+                        const w = Math.round((Math.abs(b.amount) / max) * 100);
+                        return (
+                          <div key={b.id}>
+                            <div className="flex justify-between text-xs text-slate-400 mb-1">
+                              <span>{b.name}</span>
+                              <span>{toVND(b.amount)}</span>
+                            </div>
+                            <div className="h-2 rounded bg-slate-800 overflow-hidden">
+                              <div className="h-2 bg-rose-600" style={{ width: `${w}%` }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
               </div>
             </Card>
           )}
@@ -822,10 +965,21 @@ export default function App() {
                   <input type="file" accept="application/json" onChange={importJSON} className="hidden" />
                 </label>
                 <Button variant="ghost" onClick={exportCSV}>Export CSV</Button>
-                <Button variant="danger" onClick={() => { if (confirm("Xóa toàn bộ dữ liệu local?")) { setTxs([]); setMembers([]); }}}>Reset Local</Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    if (confirm("Xóa toàn bộ dữ liệu local?")) {
+                      setTxs([]);
+                      setMembers([]);
+                    }
+                  }}
+                >
+                  Reset Local
+                </Button>
               </div>
               <div className="mt-4 text-xs text-slate-400">
-                User: {USER_ID}{SYNC_URL ? ` · Sync ON` : ` · Sync OFF`} {SYNC_URL ? ` (pull ${SYNC_PULL_MS}ms)` : "" }
+                User: {USER_ID}
+                {SYNC_URL ? ` · Sync ON (pull ${SYNC_PULL_MS}ms)` : ` · Sync OFF`}
               </div>
             </Card>
           )}
@@ -834,11 +988,12 @@ export default function App() {
 
       {/* Bottom Mobile Nav */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-800 bg-slate-950/90 backdrop-blur sm:hidden">
-        <div className="max-w-7xl mx-auto grid grid-cols-4">
+        <div className="max-w-7xl mx-auto grid grid-cols-5">
           {[
             { key: "tx", label: "Lịch sử", icon: "🧾" },
             { key: "members", label: "Thành viên", icon: "👥" },
             { key: "summary", label: "Tổng kết", icon: "✅" },
+            { key: "charts", label: "Charts", icon: "📊" },
             { key: "settings", label: "Cài đặt", icon: "⚙️" },
           ].map((it) => {
             const active = tab === it.key;
