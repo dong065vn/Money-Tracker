@@ -2,6 +2,7 @@
   "name": "moneytracker-frontend",
   "version": "1.0.0",
   "private": true,
+   "type": "module", 
   "description": "MoneyTracker Frontend (React + Vite + Tailwind)",
   "scripts": {
     "dev": "vite",

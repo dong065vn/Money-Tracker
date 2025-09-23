@@ -630,51 +630,33 @@ const connectDrive = async () => {
   /* =========================
      Google Drive Sync helpers (LOAD/SAVE)
      ========================= */
- const loadFromDrive = async () => {
-  if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
+ async function loadFromDrive(userId) {
+  const oauth2 = getOAuth2Client(userId);
+  if (!oauth2) throw new Error("oauth_not_configured");
+  if (!oauth2.credentials || !oauth2.credentials.access_token) throw new Error("not_linked");
+
+  const drive = getDriveClient(oauth2);
 
   try {
-    const r = await fetch(`${SYNC_URL}/api/drive/load`, {
-      headers: { Accept: "application/json", "x-user-id": USER_ID },
-    });
-    let out = null;
-    try { out = await r.json(); } catch (_) {}
+    const file = await ensureUserFile(drive, userId); // tìm file cũ
+    const res = await drive.files.get(
+      { fileId: file.id, alt: "media" },
+      { responseType: "json" }
+    );
 
-    if (!r.ok || out?.ok === false) {
-      const status = r.status;
-      const msg = out?.error || `load_failed (${status})`;
+    const body = res.data || { state: { members: [], transactions: [] }, version: 0 };
+    const version = Number(body.version || 0);
+    const etag = `"v${version}"`;
 
-      if (String(msg).includes("no_token") || status === 401) {
-        alert("Bạn chưa liên kết Google Drive hoặc phiên đã hết hạn.\nNhấn “Kết nối Google Drive” rồi thử lại.");
-        return;
-      }
-      if (status === 403) {
-        alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY (server).");
-        return;
-      }
-      if (msg === "missing_scope_drive_appdata") {
-        const go = confirm(
-          "Token Drive hiện không có quyền 'appData'.\nBạn cần ngắt liên kết rồi kết nối lại để cấp quyền.\n\nBấm OK để ngắt liên kết ngay."
-        );
-        if (go) await unlinkDrive();
-        return;
-      }
-      console.error("[drive/load] error:", msg);
-      alert(`Không thể tải từ Drive: ${msg}`);
-      return;
-    }
-
-    const state = out?.state || {};
-    const m = Array.isArray(state.members) ? state.members : [];
-    const t = Array.isArray(state.transactions) ? state.transactions : [];
-    setMembers(m);
-    setTxs(t);
-    if (typeof out?.version === "number") setVersion(out.version);
-    if (out?.etag) setEtag(out.etag);
-    alert("Đã đồng bộ từ Google Drive.");
+    return { fileId: file.id, state: body.state || { members: [], transactions: [] }, version, etag };
   } catch (e) {
-    console.error("[drive/load] exception:", e);
-    alert("Không thể tải từ Drive (sự cố mạng hoặc server).");
+    const msg = String(e?.message || e);
+    // 🔑 nếu token hết hạn → chỉ xoá token, không tạo file mới
+    if (msg.includes("invalid_grant") || msg.includes("invalid_token")) {
+      deleteUserToken(userId);        // ngắt liên kết user này
+      throw new Error("not_linked");  // báo cho FE biết cần relink
+    }
+    throw e; // lỗi khác thì trả về nguyên
   }
 };
   
@@ -683,23 +665,37 @@ console.log("tx example", txs?.[0]);
 
 
 // ---- SAVE lên Drive: làm sạch state trước khi stringify ----
-const saveToDrive = async () => {
+async function saveToDrive(userId, nextState, ifMatch) {
+  const oauth2 = getOAuth2Client(userId);
+  if (!oauth2) throw new Error("oauth_not_configured");
+  if (!oauth2.credentials || !oauth2.credentials.access_token) throw new Error("not_linked");
+
   try {
-    const r = await fetch(`${SYNC_URL}/api/drive/save`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-user-id": USER_ID,
-        "x-api-key": import.meta.env.VITE_SYNC_KEY || "changeme_dev",
-      },
-      body: JSON.stringify({ state: { members, transactions: txs } }),
+    const { fileId, state, version, etag } = await loadFromDrive(userId);
+
+    if (ifMatch && ifMatch !== etag) {
+      return { conflict: true, current: { state, version, etag } };
+    }
+
+    const drive = getDriveClient(oauth2);
+    const nextVersion = version + 1;
+    const nextBody = { state: nextState ?? state, version: nextVersion };
+
+    await drive.files.update({
+      fileId,
+      media: { mimeType: "application/json", body: JSON.stringify(nextBody) },
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || "save failed");
-    alert("✅ Đã lưu lên Drive");
+
+    const newEtagStr = `"v${nextVersion}"`;
+    return { ok: true, version: nextVersion, etag: newEtagStr };
   } catch (e) {
-    console.error("[drive/save] error:", e);
-    alert("❌ Không thể lưu lên Drive");
+    const msg = String(e?.message || e);
+    // 🔑 token hỏng → xoá token, không tạo file mới
+    if (msg.includes("invalid_grant") || msg.includes("invalid_token")) {
+      deleteUserToken(userId);
+      throw new Error("not_linked");
+    }
+    throw e;
   }
 };
 
