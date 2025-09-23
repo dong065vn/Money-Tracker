@@ -589,6 +589,7 @@ export default function App() {
     alert("Không thể kết nối Google Drive");
   }
 };
+
   // Ngắt liên kết (xoá token ở server) để xin lại quyền/refresh_token
   const unlinkDrive = async () => {
     if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
@@ -610,29 +611,16 @@ export default function App() {
   /* =========================
      Google Drive Sync helpers (LOAD/SAVE)
      ========================= */
-  const loadFromDrive = async () => {
-  if (!SYNC_URL) {
-    alert("Chưa cấu hình VITE_SYNC_URL");
-    return;
-  }
+ const loadFromDrive = async () => {
+  if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
 
   try {
     const r = await fetch(`${SYNC_URL}/api/drive/load`, {
-      headers: {
-        Accept: "application/json",
-        "x-user-id": USER_ID,
-      },
+      headers: { Accept: "application/json", "x-user-id": USER_ID },
     });
-
-    // cố parse JSON (kể cả khi 500)
     let out = null;
-    try {
-      out = await r.json();
-    } catch (_) {
-      // có thể 500 không trả JSON
-    }
+    try { out = await r.json(); } catch (_) {}
 
-    // KHÔNG OK -> hiển thị lỗi chi tiết
     if (!r.ok || out?.ok === false) {
       const status = r.status;
       const msg = out?.error || `load_failed (${status})`;
@@ -641,9 +629,8 @@ export default function App() {
         alert("Bạn chưa liên kết Google Drive hoặc phiên đã hết hạn.\nNhấn “Kết nối Google Drive” rồi thử lại.");
         return;
       }
-
       if (status === 403) {
-        alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY/SYNC_API_KEY (server).");
+        alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY (server).");
         return;
       }
       if (msg === "missing_scope_drive_appdata") {
@@ -653,110 +640,77 @@ export default function App() {
         if (go) await unlinkDrive();
         return;
       }
-
       console.error("[drive/load] error:", msg);
       alert(`Không thể tải từ Drive: ${msg}`);
       return;
     }
 
-    // OK -> out: { ok:true, data:{members,transactions}, version?, etag? }
-    const payload = out?.data || out; // phòng trường hợp server trả thẳng state
-    const members = Array.isArray(payload?.members) ? payload.members : [];
-    const transactions = Array.isArray(payload?.transactions) ? payload.transactions : [];
-
-    setMembers(members);
-    setTxs(transactions);
-
-    // version/etag có thể không có — set nếu có
+    const payload = out?.data || out;
+    const m = Array.isArray(payload?.members) ? payload.members : [];
+    const t = Array.isArray(payload?.transactions) ? payload.transactions : [];
+    setMembers(m);
+    setTxs(t);
     if (typeof out?.version === "number") setVersion(out.version);
     if (out?.etag) setEtag(out.etag);
-
     alert("Đã đồng bộ từ Google Drive.");
   } catch (e) {
     console.error("[drive/load] exception:", e);
     alert("Không thể tải từ Drive (sự cố mạng hoặc server).");
   }
 };
+  
 console.log("members example", members?.[0]);
 console.log("tx example", txs?.[0]);
 
 
 // ---- SAVE lên Drive: làm sạch state trước khi stringify ----
 const saveToDrive = async () => {
-  if (!SYNC_URL) {
-    alert("Chưa cấu hình VITE_SYNC_URL");
-    return;
-  }
+  if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
   try {
-    // 1) Làm sạch members (chỉ giữ field thuần)
     const safeMembers = (members || []).map((m) => ({
       id: m?.id,
       name: typeof m?.name === "string" ? m.name : String(m?.name ?? ""),
       color: typeof m?.color === "string" ? m.color : "#4f46e5",
     }));
-
-    // 2) Làm sạch transactions (chỉ giữ field cần thiết)
     const safeTxs = (txs || []).map((t) => {
       const clean = {
         id: t?.id,
         payer: Number(t?.payer || 0),
         total: Number(t?.total || 0),
-        participants: Array.isArray(t?.participants)
-          ? t.participants.map((x) => Number(x))
-          : [],
+        participants: Array.isArray(t?.participants) ? t.participants.map((x) => Number(x)) : [],
         mode: t?.mode === "weights" || t?.mode === "explicit" ? t.mode : "equal",
         note: typeof t?.note === "string" ? t.note : "",
         ts: typeof t?.ts === "string" ? t.ts : new Date().toISOString(),
       };
-
-      if (t?.mode === "weights" && t?.weights && typeof t.weights === "object") {
-        const w = {};
-        Object.entries(t.weights).forEach(([k, v]) => (w[k] = Number(v) || 0));
-        clean.weights = w;
+      if (t?.mode === "weights" && t?.weights) {
+        const w = {}; Object.entries(t.weights).forEach(([k, v]) => (w[k] = Number(v) || 0)); clean.weights = w;
       }
-      if (t?.mode === "explicit" && t?.shares && typeof t.shares === "object") {
-        const s = {};
-        Object.entries(t.shares).forEach(([k, v]) => (s[k] = Number(v) || 0));
-        clean.shares = s;
+      if (t?.mode === "explicit" && t?.shares) {
+        const s = {}; Object.entries(t.shares).forEach(([k, v]) => (s[k] = Number(v) || 0)); clean.shares = s;
       }
-      if (Array.isArray(t?.paid)) {
-        clean.paid = t.paid.map((x) => Number(x));
-      }
-
+      if (Array.isArray(t?.paid)) clean.paid = t.paid.map((x) => Number(x));
       return clean;
     });
-
-    const payload = { state: { members: safeMembers, transactions: safeTxs } };
-
-    // Debug: xem data trước khi gửi
-    console.log("[drive/save] payload", payload);
 
     const r = await fetch(`${SYNC_URL}/api/drive/save`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-user-id": USER_ID,
-        "x-api-key": SYNC_KEY || "",
         Accept: "application/json",
+        "x-user-id": USER_ID,
+        "x-api-key": SYNC_KEY || "",   // nếu BE bật API_KEY, để trống cũng không sao
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ state: { members: safeMembers, transactions: safeTxs } }),
     });
 
     let out = null;
-    try { out = await r.json(); } catch (_) {}
+    try { out = await r.json(); } catch {}
 
     if (!r.ok || out?.ok === false) {
       const status = r.status;
       const msg = out?.error || `save_failed (${status})`;
-
-      if (status === 401) {
-        alert("Bạn chưa liên kết Google Drive hoặc phiên đã hết hạn. Kết nối lại rồi lưu tiếp.");
-        return;
-      }
-      if (status === 403) {
-        alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (frontend) và API_KEY/SYNC_API_KEY (server).");
-        return;
-      }
+      if (status === 401) { alert("Chưa liên kết Drive hoặc phiên hết hạn. Kết nối lại rồi lưu tiếp."); return; }
+      if (status === 403) { alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (FE) và API_KEY (BE)."); return; }
       if (msg === "missing_scope_drive_appdata") {
         const go = confirm(
           "Token Drive hiện không có quyền 'appData'.\nBạn cần ngắt liên kết rồi kết nối lại để cấp quyền.\n\nBấm OK để ngắt liên kết ngay."
@@ -764,19 +718,16 @@ const saveToDrive = async () => {
         if (go) await unlinkDrive();
         return;
       }
-
       console.error("[drive/save] error:", msg);
       alert(`Không thể lưu lên Drive: ${msg}`);
       return;
     }
-
     alert("Đã lưu lên Google Drive.");
   } catch (e) {
     console.error("[drive/save] exception:", e);
     alert("Không thể lưu lên Drive (sự cố dữ liệu hoặc mạng).");
   }
 };
-
 
 
   /* =========================
