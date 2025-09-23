@@ -161,14 +161,14 @@ const saveTxs = (arr) => localStorage.setItem(LS_TXS, JSON.stringify(arr));
    ========================= */
 async function pullRemote() {
   if (!SYNC_URL) return null;
-  const res = await fetch(`${SYNC_URL}/api/state`, {
-    headers: { "x-user-id": USER_ID },
-  });
+  const res = await fetch(`${SYNC_URL}/api/state`, { headers: { "x-user-id": USER_ID } });
+  if (res.status === 401) return null; // not linked -> bỏ qua
   if (!res.ok) throw new Error("pull failed");
   const etag = res.headers.get("ETag");
   const json = await res.json();
   return { ...json, etag };
 }
+
 async function pushRemote(state, etag) {
   if (!SYNC_URL) return null;
   const res = await fetch(`${SYNC_URL}/api/state`, {
@@ -181,6 +181,7 @@ async function pushRemote(state, etag) {
     },
     body: JSON.stringify({ state }),
   });
+  if (res.status === 401) return null; // not linked -> bỏ qua
   if (res.status === 409) {
     const data = await res.json();
     return { conflict: true, current: data.current };
@@ -190,7 +191,6 @@ async function pushRemote(state, etag) {
   const data = await res.json();
   return { ...data, etag: newEtag };
 }
-
 
 /* =========================
    UI Atoms
@@ -580,25 +580,22 @@ const resetDrive = async () => {
     });
     const out = await r.json().catch(() => ({}));
     if (!r.ok || out?.ok === false) {
-      const msg = out?.error || `reset_failed (${r.status})`;
-      alert("Không thể ngắt liên kết: " + msg);
+      alert("Không thể ngắt liên kết: " + (out?.error || `reset_failed (${r.status})`));
       return;
     }
-    alert("Đã ngắt liên kết. Bấm 'Kết nối Google Drive' để cấp quyền lại.");
+    alert("Đã ngắt liên kết. Bấm “Kết nối Google Drive” để cấp quyền lại.");
   } catch (e) {
     console.error("[drive/reset] exception:", e);
     alert("Không thể ngắt liên kết (sự cố mạng hoặc server).");
   }
 };
 
+
   /* =========================
      Google Drive OAuth (BACKEND trả URL)
      ========================= */
-  const connectDrive = async () => {
-  if (!SYNC_URL) {
-    alert("Chưa cấu hình VITE_SYNC_URL");
-    return;
-  }
+const connectDrive = async () => {
+  if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
   try {
     const r = await fetch(`${SYNC_URL}/api/auth/url?user=${encodeURIComponent(USER_ID)}`, {
       headers: { "x-user-id": USER_ID },
@@ -610,6 +607,7 @@ const resetDrive = async () => {
     alert("Không thể kết nối Google Drive");
   }
 };
+
 
   // Ngắt liên kết (xoá token ở server) để xin lại quyền/refresh_token
   const unlinkDrive = async () => {

@@ -273,28 +273,39 @@ app.get("/api/oauth2callback", async (req, res) => {
   }
 });
 
-// Xoá token theo user để yêu cầu login lại (scope mới)
-app.post("/api/auth/reset", (req, res) => {
+// ==== Auth status: FE hỏi xem user đã liên kết Drive chưa ====
+app.get("/api/auth/status", (req, res) => {
+  const userId = uidFromReq(req, res, /*isOptional*/ true);
+  const linked = !!(userId && getUserToken(userId));
+  return res.json({ ok: true, linked });
+});
+
+// ==== Reset token: NGẮT LIÊN KẾT ====
+app.post("/api/auth/reset", async (req, res) => {
   try {
-    const userId = req.headers["x-user-id"];
+    const userId = req.get("x-user-id");
     if (!userId) return res.status(400).json({ ok: false, error: "missing_user" });
 
-    // Tùy cách bạn lưu token:
-    //  - nếu dùng Map trong RAM:
-    if (global.tokenStore instanceof Map) {
-      global.tokenStore.delete(userId);
-    }
-    //  - nếu bạn dùng object:
-    if (global.tokens && global.tokens[userId]) delete global.tokens[userId];
-    //  - nếu lưu DB/Redis: xóa trong DB/Redis tại đây.
+    const tokens = getUserToken(userId);
+
+    // Thử revoke với Google (không bắt buộc thành công)
+    try {
+      const oauth2 = getOAuth2Client(); // client rỗng, chỉ để gọi revoke
+      if (tokens?.access_token) await oauth2.revokeToken(tokens.access_token).catch(() => {});
+      if (tokens?.refresh_token) await oauth2.revokeToken(tokens.refresh_token).catch(() => {});
+    } catch (_) {}
+
+    // XÓA token trong tokens.json (QUAN TRỌNG)
+    deleteUserToken(userId);
 
     console.log(`[auth/reset] removed token for user=${userId}`);
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (e) {
     console.error("[auth/reset] error:", e);
-    res.status(500).json({ ok: false, error: "reset_failed" });
+    return res.status(500).json({ ok: false, error: "reset_failed" });
   }
 });
+
 
 
 /* ============ HEALTH ============ */
@@ -448,27 +459,6 @@ app.get("/api/drive/load", async (req, res) => {
   }
 
 });
-// ===== Ngắt liên kết Google Drive (xoá token lưu theo user) =====
-app.post("/api/auth/reset", async (req, res) => {
-  try {
-    const userId = req.headers["x-user-id"];
-    if (!userId) {
-      return res.status(400).json({ ok: false, error: "missing_user" });
-    }
-
-    // giả sử bạn đang lưu tokens trong memory hoặc file
-    if (global.tokens) {
-      delete global.tokens[userId];
-    }
-
-    console.log(`[reset] Token reset for user=${userId}`);
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("[reset] error:", e);
-    return res.status(500).json({ ok: false, error: "reset_failed" });
-  }
-});
-
 
 /* ============ ROOTS ============ */
 app.get("/", (_req, res) => res.send("MoneyTracker Sync Server running"));
