@@ -569,6 +569,27 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
   };
+// ==== Google Drive: Reset (ngắt liên kết) ====
+const resetDrive = async () => {
+  if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
+  if (!confirm("Bạn có chắc muốn ngắt liên kết Google Drive cho tài khoản này?")) return;
+  try {
+    const r = await fetch(`${SYNC_URL}/api/auth/reset`, {
+      method: "POST",
+      headers: { "x-user-id": USER_ID },
+    });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok || out?.ok === false) {
+      const msg = out?.error || `reset_failed (${r.status})`;
+      alert("Không thể ngắt liên kết: " + msg);
+      return;
+    }
+    alert("Đã ngắt liên kết. Bấm 'Kết nối Google Drive' để cấp quyền lại.");
+  } catch (e) {
+    console.error("[drive/reset] exception:", e);
+    alert("Không thể ngắt liên kết (sự cố mạng hoặc server).");
+  }
+};
 
   /* =========================
      Google Drive OAuth (BACKEND trả URL)
@@ -751,6 +772,7 @@ const saveToDrive = async () => {
             </div>
           </div>
           <div className="hidden sm:flex items-center gap-2">
+            <Button variant="ghost" onClick={resetDrive}>Ngắt liên kết Drive</Button>
             <Button variant="ghost" onClick={connectDrive}>Kết nối Google Drive</Button>
             <Button variant="ghost" onClick={loadFromDrive}>Đồng bộ từ Drive</Button>
             <Button variant="ghost" onClick={unlinkDrive}>Ngắt liên kết</Button>

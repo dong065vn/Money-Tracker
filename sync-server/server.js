@@ -273,14 +273,29 @@ app.get("/api/oauth2callback", async (req, res) => {
   }
 });
 
-// Ngắt liên kết (xoá token của user)
+// Xoá token theo user để yêu cầu login lại (scope mới)
 app.post("/api/auth/reset", (req, res) => {
-  const uid = req.header("x-user-id");
-  if (!uid) return res.status(400).json({ error: "Missing x-user-id" });
+  try {
+    const userId = req.headers["x-user-id"];
+    if (!userId) return res.status(400).json({ ok: false, error: "missing_user" });
 
-  deleteUserToken(String(uid));
-  return res.json({ ok: true });
+    // Tùy cách bạn lưu token:
+    //  - nếu dùng Map trong RAM:
+    if (global.tokenStore instanceof Map) {
+      global.tokenStore.delete(userId);
+    }
+    //  - nếu bạn dùng object:
+    if (global.tokens && global.tokens[userId]) delete global.tokens[userId];
+    //  - nếu lưu DB/Redis: xóa trong DB/Redis tại đây.
+
+    console.log(`[auth/reset] removed token for user=${userId}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[auth/reset] error:", e);
+    res.status(500).json({ ok: false, error: "reset_failed" });
+  }
 });
+
 
 /* ============ HEALTH ============ */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
