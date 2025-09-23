@@ -395,10 +395,18 @@ app.post("/api/drive/save", async (req, res) => {
     }
     res.set("ETag", saved.etag);
     res.json({ ok: true, version: saved.version });
-  } catch (e) {
-    console.error("saveToDrive error:", e);
-    res.status(500).json({ ok: false, error: e.message });
+    } catch (e) {
+    const msg = String(e?.message || "");
+    console.error("saveToDrive error:", msg);
+    if (
+      msg.includes("insufficientFilePermissions") ||
+      msg.includes("The granted scopes do not give access")
+    ) {
+      return res.status(500).json({ ok: false, error: "missing_scope_drive_appdata" });
+    }
+    return res.status(500).json({ ok: false, error: msg || "save_failed" });
   }
+
 });
 
 app.get("/api/drive/load", async (req, res) => {
@@ -413,9 +421,17 @@ app.get("/api/drive/load", async (req, res) => {
     const { state, version, etag } = await loadFromDrive(userId);
     res.set("ETag", etag);
     res.json({ ok: true, version, state });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    } catch (e) {
+    const msg = String(e?.message || "");
+    if (
+      msg.includes("insufficientFilePermissions") ||
+      msg.includes("The granted scopes do not give access")
+    ) {
+      return res.status(500).json({ ok: false, error: "missing_scope_drive_appdata" });
+    }
+    return res.status(500).json({ ok: false, error: msg || "load_failed" });
   }
+
 });
 
 /* ============ ROOTS ============ */
