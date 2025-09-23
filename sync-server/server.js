@@ -433,6 +433,27 @@ app.get("/api/drive/load", async (req, res) => {
   }
 
 });
+// ===== Ngắt liên kết Google Drive (xoá token lưu theo user) =====
+app.post("/api/auth/reset", async (req, res) => {
+  try {
+    const userId = req.headers["x-user-id"];
+    if (!userId) {
+      return res.status(400).json({ ok: false, error: "missing_user" });
+    }
+
+    // giả sử bạn đang lưu tokens trong memory hoặc file
+    if (global.tokens) {
+      delete global.tokens[userId];
+    }
+
+    console.log(`[reset] Token reset for user=${userId}`);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("[reset] error:", e);
+    return res.status(500).json({ ok: false, error: "reset_failed" });
+  }
+});
+
 
 /* ============ ROOTS ============ */
 app.get("/", (_req, res) => res.send("MoneyTracker Sync Server running"));
