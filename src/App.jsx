@@ -664,9 +664,9 @@ const connectDrive = async () => {
       return;
     }
 
-    const payload = out?.data || out;
-    const m = Array.isArray(payload?.members) ? payload.members : [];
-    const t = Array.isArray(payload?.transactions) ? payload.transactions : [];
+    const state = out?.state || {};
+    const m = Array.isArray(state.members) ? state.members : [];
+    const t = Array.isArray(state.transactions) ? state.transactions : [];
     setMembers(m);
     setTxs(t);
     if (typeof out?.version === "number") setVersion(out.version);
