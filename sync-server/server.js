@@ -315,29 +315,30 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/state", async (req, res) => {
   const userId = uidFromReq(req, res, /*isOptional*/ true);
 
+  // Nếu yêu cầu phải link thì check sớm
   if (REQUIRE_USER_LINK && !getUserToken(userId)) {
     return res.status(401).json({ error: "not_linked" });
   }
 
+  // Nếu user có token: chỉ dùng Drive. Lỗi thì trả lỗi, KHÔNG rơi local.
   if (userId && getUserToken(userId)) {
     try {
       const { state, version, etag } = await loadFromDrive(userId);
       res.set("ETag", etag);
       return res.json({ state, version });
     } catch (e) {
-      if (String(e.message) === "not_linked") {
-        if (REQUIRE_USER_LINK) return res.status(401).json({ error: "not_linked" });
-      } else {
-        console.error("loadFromDrive error:", e?.message || e);
-      }
-      // rơi xuống fallback local
+      const msg = String(e?.message || "");
+      console.error("loadFromDrive error:", msg);
+      // Trả lỗi để FE KHÔNG lấy state rỗng và không ghi đè rỗng lên Drive
+      return res.status(502).json({ error: "drive_unavailable", detail: msg });
     }
   }
 
-  // Fallback local
+  // Chỉ khi CHƯA link Drive mới dùng local
   res.set("ETag", LOCAL_ETAG);
   res.json({ state: LOCAL_STATE, version: LOCAL_VERSION });
 });
+
 
 app.put("/api/state", async (req, res) => {
   if (API_KEY && req.get("x-api-key") !== API_KEY) {
@@ -360,23 +361,19 @@ app.put("/api/state", async (req, res) => {
     try {
       const saved = await saveToDrive(userId, next, ifMatch);
       if (saved?.conflict) {
-        res.status(409).json({ error: "conflict", current: saved.current });
-      } else {
-        res.set("ETag", saved.etag);
-        res.json({ ok: true, version: saved.version });
+        return res.status(409).json({ error: "conflict", current: saved.current });
       }
-      return;
+      res.set("ETag", saved.etag);
+      return res.json({ ok: true, version: saved.version });
     } catch (e) {
-      if (String(e.message) === "not_linked") {
-        if (REQUIRE_USER_LINK) return res.status(401).json({ error: "not_linked" });
-      } else {
-        console.error("saveToDrive error:", e?.message || e);
-      }
-      // rơi xuống fallback
+      const msg = String(e?.message || "");
+      console.error("saveToDrive error:", msg);
+      // ❗ KHÔNG fallback local ở đây để tránh mất dữ liệu
+      return res.status(502).json({ error: "drive_unavailable", detail: msg });
     }
   }
 
-  // Fallback local
+  // ---- Nhánh local: chỉ dùng cho user CHƯA link ----
   if (ifMatch && ifMatch !== LOCAL_ETAG) {
     return res.status(409).json({
       error: "conflict",
@@ -392,6 +389,7 @@ app.put("/api/state", async (req, res) => {
   res.json({ ok: true, version: LOCAL_VERSION });
 });
 
+
 /* ============ SAVE/LOAD THỦ CÔNG LÊN DRIVE ============ */
 // SAVE: nhận state từ body rồi ghi lên Drive; nếu thiếu thì fallback state hiện có
 app.post("/api/drive/save", async (req, res) => {
@@ -399,29 +397,26 @@ app.post("/api/drive/save", async (req, res) => {
   if (!userId) return;
 
   if (!getUserToken(userId)) {
-    return res.status(401).json({ ok: false, error: "Chưa kết nối Google Drive" });
+    return res.status(401).json({ ok: false, error: "not_linked" });
   }
 
   try {
     const ifMatch = req.get("If-Match") || "";
-    let nextState = req.body?.state;
+    const nextState = req.body?.state;
 
+    // 🚫 Không còn auto-fill từ local. FE PHẢI gửi state đầy đủ.
     if (!nextState || typeof nextState !== "object") {
-      try {
-        const current = await loadFromDrive(userId);
-        nextState = current.state;
-      } catch {
-        nextState = LOCAL_STATE;
-      }
+      return res.status(400).json({ ok: false, error: "missing_state_body" });
     }
 
     const saved = await saveToDrive(userId, nextState, ifMatch);
     if (saved?.conflict) {
       return res.status(409).json({ ok: false, error: "conflict", current: saved.current });
     }
+
     res.set("ETag", saved.etag);
-    res.json({ ok: true, version: saved.version });
-    } catch (e) {
+    return res.json({ ok: true, version: saved.version });
+  } catch (e) {
     const msg = String(e?.message || "");
     console.error("saveToDrive error:", msg);
     if (
@@ -432,8 +427,8 @@ app.post("/api/drive/save", async (req, res) => {
     }
     return res.status(500).json({ ok: false, error: msg || "save_failed" });
   }
-
 });
+
 
 app.get("/api/drive/load", async (req, res) => {
   const userId = uidFromReq(req, res);
