@@ -684,67 +684,22 @@ console.log("tx example", txs?.[0]);
 
 // ---- SAVE lên Drive: làm sạch state trước khi stringify ----
 const saveToDrive = async () => {
-  if (!SYNC_URL) { alert("Chưa cấu hình VITE_SYNC_URL"); return; }
   try {
-    const safeMembers = (members || []).map((m) => ({
-      id: m?.id,
-      name: typeof m?.name === "string" ? m.name : String(m?.name ?? ""),
-      color: typeof m?.color === "string" ? m.color : "#4f46e5",
-    }));
-    const safeTxs = (txs || []).map((t) => {
-      const clean = {
-        id: t?.id,
-        payer: Number(t?.payer || 0),
-        total: Number(t?.total || 0),
-        participants: Array.isArray(t?.participants) ? t.participants.map((x) => Number(x)) : [],
-        mode: t?.mode === "weights" || t?.mode === "explicit" ? t.mode : "equal",
-        note: typeof t?.note === "string" ? t.note : "",
-        ts: typeof t?.ts === "string" ? t.ts : new Date().toISOString(),
-      };
-      if (t?.mode === "weights" && t?.weights) {
-        const w = {}; Object.entries(t.weights).forEach(([k, v]) => (w[k] = Number(v) || 0)); clean.weights = w;
-      }
-      if (t?.mode === "explicit" && t?.shares) {
-        const s = {}; Object.entries(t.shares).forEach(([k, v]) => (s[k] = Number(v) || 0)); clean.shares = s;
-      }
-      if (Array.isArray(t?.paid)) clean.paid = t.paid.map((x) => Number(x));
-      return clean;
-    });
-
     const r = await fetch(`${SYNC_URL}/api/drive/save`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/json",
         "x-user-id": USER_ID,
-        "x-api-key": SYNC_KEY || "",   // nếu BE bật API_KEY, để trống cũng không sao
+        "x-api-key": import.meta.env.VITE_SYNC_KEY || "changeme_dev",
       },
-      body: JSON.stringify({ state: { members: safeMembers, transactions: safeTxs } }),
+      body: JSON.stringify({ state: { members, transactions: txs } }),
     });
-
-    let out = null;
-    try { out = await r.json(); } catch {}
-
-    if (!r.ok || out?.ok === false) {
-      const status = r.status;
-      const msg = out?.error || `save_failed (${status})`;
-      if (status === 401) { alert("Chưa liên kết Drive hoặc phiên hết hạn. Kết nối lại rồi lưu tiếp."); return; }
-      if (status === 403) { alert("API key không hợp lệ. Kiểm tra VITE_SYNC_KEY (FE) và API_KEY (BE)."); return; }
-      if (msg === "missing_scope_drive_appdata") {
-        const go = confirm(
-          "Token Drive hiện không có quyền 'appData'.\nBạn cần ngắt liên kết rồi kết nối lại để cấp quyền.\n\nBấm OK để ngắt liên kết ngay."
-        );
-        if (go) await unlinkDrive();
-        return;
-      }
-      console.error("[drive/save] error:", msg);
-      alert(`Không thể lưu lên Drive: ${msg}`);
-      return;
-    }
-    alert("Đã lưu lên Google Drive.");
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "save failed");
+    alert("✅ Đã lưu lên Drive");
   } catch (e) {
-    console.error("[drive/save] exception:", e);
-    alert("Không thể lưu lên Drive (sự cố dữ liệu hoặc mạng).");
+    console.error("[drive/save] error:", e);
+    alert("❌ Không thể lưu lên Drive");
   }
 };
 

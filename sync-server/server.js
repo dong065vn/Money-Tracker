@@ -241,10 +241,10 @@ app.get("/api/auth/url", (req, res) => {
   const oauth2 = getOAuth2Client();
   if (!oauth2) return res.status(500).json({ error: "oauth_not_configured" });
 
-  const scopes =
-    DRIVE_MODE === "appDataFolder"
-      ? ["https://www.googleapis.com/auth/drive.appdata"]
-      : ["https://www.googleapis.com/auth/drive.file"];
+  const scopes = [
+  "https://www.googleapis.com/auth/drive.appdata",
+  "https://www.googleapis.com/auth/drive.file"
+];
 
   const url = oauth2.generateAuthUrl({
     access_type: "offline",
