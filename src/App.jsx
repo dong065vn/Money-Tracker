@@ -778,7 +778,7 @@ export default function App() {
   const [tab, setTab] = useState("tx"); // tx | members | summary | charts | settings
 
   return (
-    <div className={`min-h-screen ${pageBg} ${pageText} font-[Inter]`}>
+    <div className={`min-h-screen pb-28 ${pageBg} ${pageText} font-[Inter]`}>
       {/* Header */}
       <div className="sticky top-0 z-20 bg-slate-950/70 border-b border-slate-800 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
@@ -929,6 +929,8 @@ export default function App() {
           SYNC_PULL_MS={SYNC_PULL_MS}
         />
       </div>
+{/* Bottom Mobile Nav */}
+<BottomNav tab={tab} setTab={setTab} />
 
       <footer className="py-10 text-center text-xs text-slate-500">
         © {new Date().getFullYear()} MoneyTracker · User: {USER_ID}
@@ -1628,46 +1630,43 @@ function BarList({ title, data, color }) {
 
 function BottomNav({ tab, setTab }) {
   const items = [
-    { key: "tx",       label: "Lịch sử",  icon: <i className="fa-solid fa-receipt" aria-hidden="true"></i> },
-    { key: "members",  label: "Thành viên", icon: <i className="fa-solid fa-users" aria-hidden="true"></i> },
-    { key: "summary",  label: "Tổng kết", icon: <i className="fa-solid fa-circle-check" aria-hidden="true"></i> },
-    { key: "charts",   label: "Charts",   icon: <i className="fa-solid fa-chart-bar" aria-hidden="true"></i> },
-    { key: "settings", label: "Cài đặt",  icon: <i className="fa-solid fa-gear" aria-hidden="true"></i> },
-  ];
+  { key: "tx",       label: "Lịch sử",    icon: <i className="fa-solid fa-receipt" aria-hidden="true"></i> },
+  { key: "members",  label: "Thành viên", icon: <i className="fa-solid fa-users" aria-hidden="true"></i> },
+  { key: "summary",  label: "Tổng kết",   icon: <i className="fa-solid fa-circle-check" aria-hidden="true"></i> },
+  { key: "charts",   label: "Charts",     icon: <i className="fa-solid fa-chart-bar" aria-hidden="true"></i> },
+  { key: "settings", label: "Cài đặt",    icon: <i className="fa-solid fa-gear" aria-hidden="true"></i> },
+];
   const idx = Math.max(0, items.findIndex((i) => i.key === tab));
   const widthPct = 100 / items.length;
   const leftPct = idx * widthPct;
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-800 bg-slate-950/90 backdrop-blur sm:hidden">
-      <div className="relative max-w-7xl mx-auto">
-        <div
-          className="absolute bottom-0 h-0.5 bg-indigo-400 transition-all duration-300 ease-out"
-          style={{ width: `${widthPct}%`, left: `${leftPct}%` }}
-        />
-        <div
-          className="grid"
-          style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
-        >
-          {items.map((it) => {
-            const active = tab === it.key;
-            return (
-              <button
-                key={it.key}
-                onClick={() => setTab(it.key)}
-                className={`py-2.5 text-xs flex flex-col items-center transition-all duration-200 ${
-                  active
-                    ? "text-indigo-300 scale-105"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                <span className="text-lg">{it.icon}</span>
-                <span>{it.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </nav>
+    <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-slate-800 bg-slate-950/95 backdrop-blur sm:hidden">
+  <div className="relative max-w-7xl mx-auto">
+    <div
+      className="absolute bottom-0 h-0.5 bg-indigo-400 transition-all duration-300 ease-out"
+      style={{ width: `${widthPct}%`, left: `${leftPct}%` }}
+    />
+    <div className="grid" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+      {items.map((it) => {
+        const active = tab === it.key;
+        return (
+          <button
+            key={it.key}
+            onClick={() => setTab(it.key)}
+            className={`py-2.5 text-xs flex flex-col items-center gap-1 transition-all duration-200 ${
+              active ? "text-indigo-300 scale-105" : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {/* icon FA7 */}
+            <span className="text-base leading-none">{it.icon}</span>
+            <span>{it.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  </div>
+</nav>
+
   );
 }
