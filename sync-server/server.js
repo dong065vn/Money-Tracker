@@ -1,6 +1,6 @@
 // server.js — ESM
 // ===============================
-// MoneyTracker Sync API + Google Drive (per-user)
+// MoneyTracker Sync API + Google Drive (per-user) + SSE Realtime-ish
 // ===============================
 import "dotenv/config";
 import express from "express";
@@ -22,9 +22,9 @@ const PORT = process.env.PORT || 3000;
 const DEFAULT_ORIGINS = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-  "https://money-tracker-opal-sigma.vercel.app",
+  "https://money-tracker-opal-sigma.vercel.app"
 ];
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || ""; // ví dụ: "https://app1.com,https://app2.com"
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || ""; // "https://app1.com,https://app2.com"
 const EXTRA_ORIGINS = FRONTEND_ORIGIN
   ? FRONTEND_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean)
   : [];
@@ -45,10 +45,10 @@ const DRIVE_MODE = process.env.DRIVE_MODE || "appDataFolder"; // "appDataFolder"
 const REQUIRE_USER_LINK = String(process.env.REQUIRE_USER_LINK || "false") === "true";
 
 // Tên file lưu trên Drive
-const DRIVE_FILE_PREFIX = process.env.DRIVE_FILE_PREFIX || ""; // tuỳ chọn, ví dụ "moneytracker_"
+const DRIVE_FILE_PREFIX = process.env.DRIVE_FILE_PREFIX || ""; // ví dụ "moneytracker_"
 const DRIVE_FILENAME_BASE = "moneytracker_state.json";
 
-// Fallback tương thích ngược: dữ liệu local
+// Fallback tương thích ngược: dữ liệu local (chỉ dùng khi CHƯA liên kết)
 const LOCAL_DATA_FILE = path.join(__dirname, "data.json");
 
 // Token lưu theo user (JSON file đơn giản)
@@ -73,7 +73,41 @@ app.use(
 // preflight
 app.options("*", cors());
 
-/* ============ LOCAL FALLBACK STORE ============ */
+/* ============ SSE (Realtime-ish) ============ */
+global.clients = {}; // userId => [res]
+
+app.get("/api/stream", (req, res) => {
+  const userId = uidFromReq(req, res);
+  if (!userId) return;
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  if (!global.clients[userId]) global.clients[userId] = [];
+  global.clients[userId].push(res);
+
+  // gửi ping giữ kết nối
+  const timer = setInterval(() => {
+    try { res.write("event: ping\ndata: {}\n\n"); } catch {}
+  }, 25000);
+
+  req.on("close", () => {
+    clearInterval(timer);
+    global.clients[userId] = (global.clients[userId] || []).filter(r => r !== res);
+  });
+});
+
+function broadcastToUser(userId, payload) {
+  const list = global.clients?.[userId] || [];
+  for (const res of list) {
+    try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch {}
+  }
+}
+
+/* ============ LOCAL FALLBACK STORE (chỉ dùng khi CHƯA liên kết) ============ */
 let LOCAL_STATE = { members: [], transactions: [] };
 let LOCAL_VERSION = 0;
 let LOCAL_ETAG = `"v${LOCAL_VERSION}"`;
@@ -145,8 +179,7 @@ function getDriveClient(oauth2) {
   return google.drive({ version: "v3", auth: oauth2 });
 }
 function driveFilenameForUser(userId) {
-  // Nếu muốn đặt theo userId → dùng prefix kèm userId
-  // Nếu muốn 1 file cố định trong appData của từng tài khoản Drive → chỉ dùng base.
+  // Mỗi user một file riêng trong appData của Google Drive account
   return DRIVE_FILE_PREFIX
     ? `${DRIVE_FILE_PREFIX}${String(userId || "").replace(/[^\w.-]/g, "_")}.json`
     : DRIVE_FILENAME_BASE;
@@ -163,9 +196,11 @@ async function ensureUserFile(drive, userId) {
   const { data } = await drive.files.list({
     q,
     fields: "files(id, name, modifiedTime, md5Checksum)",
+    spaces: DRIVE_MODE === "appDataFolder" ? "appDataFolder" : "drive"
   });
   if (data.files && data.files.length) return data.files[0];
 
+  // Không tạo file mới khi lỗi OAuth (được chặn ở caller). Ở đây chỉ tạo khi tìm không thấy.
   const fileMeta =
     DRIVE_MODE === "appDataFolder"
       ? { name, parents: ["appDataFolder"] }
@@ -186,16 +221,25 @@ async function loadFromDrive(userId) {
   if (!oauth2.credentials || !oauth2.credentials.access_token) throw new Error("not_linked");
 
   const drive = getDriveClient(oauth2);
-  const file = await ensureUserFile(drive, userId);
-
-  const res = await drive.files.get(
-    { fileId: file.id, alt: "media" },
-    { responseType: "json" }
-  );
-  const body = res.data || { state: { members: [], transactions: [] }, version: 0 };
-  const version = Number(body.version || 0);
-  const etag = `"v${version}"`;
-  return { fileId: file.id, state: body.state || { members: [], transactions: [] }, version, etag };
+  try {
+    const file = await ensureUserFile(drive, userId);
+    const res = await drive.files.get(
+      { fileId: file.id, alt: "media" },
+      { responseType: "json" }
+    );
+    const body = res.data || { state: { members: [], transactions: [] }, version: 0 };
+    const version = Number(body.version || 0);
+    const etag = `"v${version}"`;
+    return { fileId: file.id, state: body.state || { members: [], transactions: [] }, version, etag };
+  } catch (e) {
+    const msg = String(e?.message || "");
+    // Nếu token hỏng → xóa token (ngắt liên kết), KHÔNG tạo file mới cho tới khi relink
+    if (msg.includes("invalid_grant") || msg.includes("invalid_token")) {
+      deleteUserToken(userId);
+      throw new Error("not_linked");
+    }
+    throw e;
+  }
 }
 
 async function saveToDrive(userId, nextState, ifMatch) {
@@ -203,20 +247,39 @@ async function saveToDrive(userId, nextState, ifMatch) {
   if (!oauth2) throw new Error("oauth_not_configured");
   if (!oauth2.credentials || !oauth2.credentials.access_token) throw new Error("not_linked");
 
-  const { fileId, state, version, etag } = await loadFromDrive(userId);
-  if (ifMatch && ifMatch !== etag) {
-    return { conflict: true, current: { state, version, etag } };
-  }
-  const drive = getDriveClient(oauth2);
-  const nextVersion = version + 1;
-  const nextBody = { state: nextState ?? state, version: nextVersion };
+  try {
+    const { fileId, state, version, etag } = await loadFromDrive(userId);
+    if (ifMatch && ifMatch !== etag) {
+      return { conflict: true, current: { state, version, etag } };
+    }
+    const drive = getDriveClient(oauth2);
+    const nextVersion = version + 1;
+    const nextBody = { state: nextState ?? state, version: nextVersion };
 
-  await drive.files.update({
-    fileId,
-    media: { mimeType: "application/json", body: JSON.stringify(nextBody) },
-  });
-  const newEtagStr = `"v${nextVersion}"`;
-  return { ok: true, version: nextVersion, etag: newEtagStr };
+    await drive.files.update({
+      fileId,
+      media: { mimeType: "application/json", body: JSON.stringify(nextBody) },
+    });
+
+    const newEtagStr = `"v${nextVersion}"`;
+
+    // Realtime-ish broadcast
+    broadcastToUser(userId, {
+      type: "update",
+      version: nextVersion,
+      etag: newEtagStr,
+      state: nextBody.state
+    });
+
+    return { ok: true, version: nextVersion, etag: newEtagStr };
+  } catch (e) {
+    const msg = String(e?.message || "");
+    if (msg.includes("invalid_grant") || msg.includes("invalid_token")) {
+      deleteUserToken(userId);
+      throw new Error("not_linked");
+    }
+    throw e;
+  }
 }
 
 /* ============ UTILS ============ */
@@ -242,9 +305,9 @@ app.get("/api/auth/url", (req, res) => {
   if (!oauth2) return res.status(500).json({ error: "oauth_not_configured" });
 
   const scopes = [
-  "https://www.googleapis.com/auth/drive.appdata",
-  "https://www.googleapis.com/auth/drive.file"
-];
+    "https://www.googleapis.com/auth/drive.appdata",
+    "https://www.googleapis.com/auth/drive.file"
+  ];
 
   const url = oauth2.generateAuthUrl({
     access_type: "offline",
@@ -280,7 +343,7 @@ app.get("/api/auth/status", (req, res) => {
   return res.json({ ok: true, linked });
 });
 
-// ==== Reset token: NGẮT LIÊN KẾT ====
+// ==== Reset token: NGẮT LIÊN KẾT (KHÔNG xóa file Drive) ====
 app.post("/api/auth/reset", async (req, res) => {
   try {
     const userId = req.get("x-user-id");
@@ -295,7 +358,7 @@ app.post("/api/auth/reset", async (req, res) => {
       if (tokens?.refresh_token) await oauth2.revokeToken(tokens.refresh_token).catch(() => {});
     } catch (_) {}
 
-    // XÓA token trong tokens.json (QUAN TRỌNG)
+    // XÓA token trong tokens.json (QUAN TRỌNG). KHÔNG xóa file Drive.
     deleteUserToken(userId);
 
     console.log(`[auth/reset] removed token for user=${userId}`);
@@ -306,21 +369,17 @@ app.post("/api/auth/reset", async (req, res) => {
   }
 });
 
-
-
 /* ============ HEALTH ============ */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-/* ============ STATE APIS (Drive là nguồn chính, fallback local) ============ */
+/* ============ STATE APIS (Drive là nguồn chính, fallback local khi CHƯA link) ============ */
 app.get("/api/state", async (req, res) => {
   const userId = uidFromReq(req, res, /*isOptional*/ true);
 
-  // Nếu yêu cầu phải link thì check sớm
   if (REQUIRE_USER_LINK && !getUserToken(userId)) {
     return res.status(401).json({ error: "not_linked" });
   }
 
-  // Nếu user có token: chỉ dùng Drive. Lỗi thì trả lỗi, KHÔNG rơi local.
   if (userId && getUserToken(userId)) {
     try {
       const { state, version, etag } = await loadFromDrive(userId);
@@ -329,7 +388,7 @@ app.get("/api/state", async (req, res) => {
     } catch (e) {
       const msg = String(e?.message || "");
       console.error("loadFromDrive error:", msg);
-      // Trả lỗi để FE KHÔNG lấy state rỗng và không ghi đè rỗng lên Drive
+      // KHÔNG fallback local nếu đã link — tránh ghi đè rỗng
       return res.status(502).json({ error: "drive_unavailable", detail: msg });
     }
   }
@@ -338,7 +397,6 @@ app.get("/api/state", async (req, res) => {
   res.set("ETag", LOCAL_ETAG);
   res.json({ state: LOCAL_STATE, version: LOCAL_VERSION });
 });
-
 
 app.put("/api/state", async (req, res) => {
   if (API_KEY && req.get("x-api-key") !== API_KEY) {
@@ -368,7 +426,7 @@ app.put("/api/state", async (req, res) => {
     } catch (e) {
       const msg = String(e?.message || "");
       console.error("saveToDrive error:", msg);
-      // ❗ KHÔNG fallback local ở đây để tránh mất dữ liệu
+      // KHÔNG fallback local để tránh mất dữ liệu
       return res.status(502).json({ error: "drive_unavailable", detail: msg });
     }
   }
@@ -377,7 +435,7 @@ app.put("/api/state", async (req, res) => {
   if (ifMatch && ifMatch !== LOCAL_ETAG) {
     return res.status(409).json({
       error: "conflict",
-      current: { state: LOCAL_STATE, version: LOCAL_VERSION },
+      current: { state: LOCAL_STATE, version: LOCAL_VERSION, etag: LOCAL_ETAG },
     });
   }
   LOCAL_STATE = next || LOCAL_STATE;
@@ -385,13 +443,20 @@ app.put("/api/state", async (req, res) => {
   LOCAL_ETAG = `"v${LOCAL_VERSION}"`;
   persistLocal();
 
+  // broadcast local update (nếu dùng local mode)
+  broadcastToUser(userId || "anonymous", {
+    type: "update",
+    version: LOCAL_VERSION,
+    etag: LOCAL_ETAG,
+    state: LOCAL_STATE
+  });
+
   res.set("ETag", LOCAL_ETAG);
   res.json({ ok: true, version: LOCAL_VERSION });
 });
 
-
 /* ============ SAVE/LOAD THỦ CÔNG LÊN DRIVE ============ */
-// SAVE: nhận state từ body rồi ghi lên Drive; nếu thiếu thì fallback state hiện có
+// SAVE: nhận state từ body rồi ghi lên Drive; nếu thiếu thì báo lỗi (KHÔNG đổ về local)
 app.post("/api/drive/save", async (req, res) => {
   const userId = uidFromReq(req, res);
   if (!userId) return;
@@ -403,8 +468,6 @@ app.post("/api/drive/save", async (req, res) => {
   try {
     const ifMatch = req.get("If-Match") || "";
     const nextState = req.body?.state;
-
-    // 🚫 Không còn auto-fill từ local. FE PHẢI gửi state đầy đủ.
     if (!nextState || typeof nextState !== "object") {
       return res.status(400).json({ ok: false, error: "missing_state_body" });
     }
@@ -413,9 +476,8 @@ app.post("/api/drive/save", async (req, res) => {
     if (saved?.conflict) {
       return res.status(409).json({ ok: false, error: "conflict", current: saved.current });
     }
-
     res.set("ETag", saved.etag);
-    return res.json({ ok: true, version: saved.version });
+    res.json({ ok: true, version: saved.version });
   } catch (e) {
     const msg = String(e?.message || "");
     console.error("saveToDrive error:", msg);
@@ -425,24 +487,26 @@ app.post("/api/drive/save", async (req, res) => {
     ) {
       return res.status(500).json({ ok: false, error: "missing_scope_drive_appdata" });
     }
+    if (msg.includes("not_linked")) {
+      return res.status(401).json({ ok: false, error: "not_linked" });
+    }
     return res.status(500).json({ ok: false, error: msg || "save_failed" });
   }
 });
-
 
 app.get("/api/drive/load", async (req, res) => {
   const userId = uidFromReq(req, res);
   if (!userId) return;
 
   if (!getUserToken(userId)) {
-    return res.status(401).json({ ok: false, error: "Chưa kết nối Google Drive" });
+    return res.status(401).json({ ok: false, error: "not_linked" });
   }
 
   try {
     const { state, version, etag } = await loadFromDrive(userId);
     res.set("ETag", etag);
     res.json({ ok: true, version, state });
-    } catch (e) {
+  } catch (e) {
     const msg = String(e?.message || "");
     if (
       msg.includes("insufficientFilePermissions") ||
@@ -450,9 +514,11 @@ app.get("/api/drive/load", async (req, res) => {
     ) {
       return res.status(500).json({ ok: false, error: "missing_scope_drive_appdata" });
     }
+    if (msg.includes("not_linked")) {
+      return res.status(401).json({ ok: false, error: "not_linked" });
+    }
     return res.status(500).json({ ok: false, error: msg || "load_failed" });
   }
-
 });
 
 /* ============ ROOTS ============ */
