@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 
 /* ===== ENV & SYNC ===== */
 const SYNC_URL = import.meta.env.VITE_SYNC_URL;
@@ -26,6 +26,10 @@ const toInt = (v) => {
 };
 const toVND = (n) =>
   (n ?? 0).toLocaleString("vi-VN", { maximumFractionDigits: 0 }) + " ₫";
+
+// save khi rảnh (khỏi block UI)
+const idle = (fn) =>
+  (window.requestIdleCallback ? window.requestIdleCallback(fn) : setTimeout(fn, 0));
 
 /* ===== Split & Balance (Upgraded) ===== */
 
@@ -288,15 +292,20 @@ export default function App() {
   const [etag, setEtag] = useState(null);
   const [version, setVersion] = useState(0);
 
+  // ref phục vụ auto-save thông minh
+  const lastPushedRef = useRef(""); // JSON đã push gần nhất
+  const etagRef = useRef(etag);
+  useEffect(() => { etagRef.current = etag; }, [etag]);
+
   /* === Summary (linh hoạt) state === */
   const [summaryOnlySelected, setSummaryOnlySelected] = useState(false);
   const [summarySelectedIds, setSummarySelectedIds] = useState([]); // ids của tx được chọn
   const [summaryFrom, setSummaryFrom] = useState(""); // yyyy-mm-dd
   const [summaryTo, setSummaryTo] = useState("");     // yyyy-mm-dd
 
-  /* persist local */
-  useEffect(() => saveMembers(members), [members]);
-  useEffect(() => saveTxs(txs), [txs]);
+  /* persist local (nhẹ UI) */
+  useEffect(() => { idle(() => saveMembers(members)); }, [members]);
+  useEffect(() => { idle(() => saveTxs(txs)); }, [txs]);
 
   /* initial pull */
   useEffect(() => {
@@ -320,12 +329,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* auto-save (debounce) */
+  /* auto-save (debounce + chống push thừa) */
   const stateObj = useMemo(() => ({ members, transactions: txs }), [members, txs]);
   useEffect(() => {
     const to = setTimeout(async () => {
       try {
-        const pushed = await pushRemote(stateObj, etag);
+        const json = JSON.stringify(stateObj);
+        // 1) nếu state chưa đổi so với lần push gần nhất => bỏ qua
+        if (json === lastPushedRef.current) return;
+
+        // 2) push với etag mới nhất
+        const pushed = await pushRemote(stateObj, etagRef.current);
         if (pushed?.conflict) {
           const remote = await pullRemote();
           if (remote?.state) {
@@ -337,6 +351,7 @@ export default function App() {
         } else if (pushed?.etag) {
           setVersion(pushed.version ?? version + 1);
           setEtag(pushed.etag);
+          lastPushedRef.current = json;
         }
       } catch {}
     }, 400);
@@ -361,7 +376,7 @@ export default function App() {
     return () => clearInterval(t);
   }, [version]);
 
-  /* realtime (SSE) */
+  /* realtime (SSE) — chỉ nhận version mới hơn để tránh 'nhảy' state */
   useEffect(() => {
     if (!SYNC_URL) return;
     const ev = new EventSource(
@@ -371,21 +386,17 @@ export default function App() {
       try {
         const msg = JSON.parse(e.data);
         if (msg?.type === "update") {
+          if (typeof msg.version === "number" && msg.version <= version) return;
           setMembers(Array.isArray(msg.state?.members) ? msg.state.members : []);
-          setTxs(
-            Array.isArray(msg.state?.transactions)
-              ? msg.state.transactions
-              : []
-          );
+          setTxs(Array.isArray(msg.state?.transactions) ? msg.state.transactions : []);
           setVersion(typeof msg.version === "number" ? msg.version : 0);
           setEtag(msg.etag || null);
-          console.log("🔄 Realtime update (SSE)");
         }
       } catch {}
     };
     ev.onerror = () => {}; // để polling xử lý dự phòng
     return () => ev.close();
-  }, []);
+  }, [version]);
 
   /* derived */
   const idToName = useMemo(
@@ -478,8 +489,8 @@ export default function App() {
     [summaryBalances]
   );
 
-  /* actions: members */
-  const addMember = () => {
+  /* actions: members (useCallback để giảm re-render) */
+  const addMember = useCallback(() => {
     const name = memberInput.trim();
     if (!name) return;
     if (members.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
@@ -499,8 +510,9 @@ export default function App() {
     const color = colors[members.length % colors.length];
     setMembers([...members, { id: Date.now(), name, color }]);
     setMemberInput("");
-  };
-  const removeMember = (id) => {
+  }, [memberInput, members]);
+
+  const removeMember = useCallback((id) => {
     if (!confirm("Xóa thành viên này?")) return;
     const next = members.filter((m) => m.id !== id);
     setMembers(next);
@@ -532,8 +544,9 @@ export default function App() {
         return patch;
       })
     );
-  };
-  const removeUnusedMembers = () => {
+  }, [members]);
+
+  const removeUnusedMembers = useCallback(() => {
     const used = new Set();
     normalizedTxs.forEach((t) => {
       used.add(t.payer);
@@ -543,7 +556,7 @@ export default function App() {
     if (keep.length === members.length) return alert("Không có thành viên thừa.");
     if (confirm(`Xóa ${members.length - keep.length} thành viên không thuộc giao dịch?`))
       setMembers(keep);
-  };
+  }, [members, normalizedTxs]);
 
   /* actions: transactions */
   const [payerDraft, setPayerDraft] = useState(0);
@@ -559,15 +572,16 @@ export default function App() {
       setParticipantsDraft(members.map((m) => m.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [members.length]);
-  const toggleParticipantDraft = (id) =>
+  const toggleParticipantDraft = useCallback((id) =>
     setParticipantsDraft((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  const onWeightDraftChange = (id, v) =>
-    setWeightsDraft((w) => ({ ...w, [id]: Number(v) }));
-  const onShareDraftChange = (id, v) =>
-    setSharesDraft((s) => ({ ...s, [id]: toInt(v) }));
-  const addTransaction = () => {
+    ), []);
+  const onWeightDraftChange = useCallback((id, v) =>
+    setWeightsDraft((w) => ({ ...w, [id]: Number(v) })), []);
+  const onShareDraftChange = useCallback((id, v) =>
+    setSharesDraft((s) => ({ ...s, [id]: toInt(v) })), []);
+
+  const addTransaction = useCallback(() => {
     const total = toInt(totalDraft);
     const parts = participantsDraft.filter((pid) =>
       members.some((m) => m.id === pid)
@@ -578,7 +592,7 @@ export default function App() {
     if (parts.length === 0) return alert("Chọn ít nhất 1 participant.");
 
     const tx = {
-      id: `T${Date.now()}`,
+      id: (crypto?.randomUUID?.() ?? `T${Date.now()}`), // ID ổn định/ít đụng
       payer: payerDraft,
       total,
       participants: parts,
@@ -600,12 +614,14 @@ export default function App() {
     setSharesDraft({});
     setNoteDraft("");
     setParticipantsDraft(members.map((m) => m.id));
-  };
-  const removeTx = (id) => {
+  }, [totalDraft, participantsDraft, members, payerDraft, modeDraft, noteDraft, weightsDraft, sharesDraft]);
+
+  const removeTx = useCallback((id) => {
     if (confirm("Xóa giao dịch này?"))
       setTxs((arr) => arr.filter((t) => t.id !== id));
-  };
-  const togglePaid = (txId, memberId) => {
+  }, []);
+
+  const togglePaid = useCallback((txId, memberId) => {
     setTxs((prev) =>
       prev.map((t) => {
         if (
@@ -619,10 +635,10 @@ export default function App() {
         return { ...t, paid: [...set] };
       })
     );
-  };
+  }, []);
 
   /* export / import */
-  const downloadJSON = () => {
+  const downloadJSON = useCallback(() => {
     const blob = new Blob(
       [JSON.stringify({ members, transactions: txs }, null, 2)],
       { type: "application/json" }
@@ -633,8 +649,9 @@ export default function App() {
     a.download = "moneytracker_backup.json";
     a.click();
     URL.revokeObjectURL(url);
-  };
-  const importJSON = (ev) => {
+  }, [members, txs]);
+
+  const importJSON = useCallback((ev) => {
     const f = ev.target.files?.[0];
     if (!f) return;
     const r = new FileReader();
@@ -649,8 +666,9 @@ export default function App() {
       }
     };
     r.readAsText(f);
-  };
-  const exportCSV = () => {
+  }, []);
+
+  const exportCSV = useCallback(() => {
     const rows = [
       ["ID", "Time", "Payer", "Total(VND)", "Mode", "Participants", "Paid", "Note"],
     ];
@@ -683,10 +701,10 @@ export default function App() {
     a.download = "moneytracker_transactions.csv";
     a.click();
     URL.revokeObjectURL(url);
-  };
+  }, [txs, idToName]);
 
   /* Drive OAuth & Sync (manual) */
-  const connectDrive = async () => {
+  const connectDrive = useCallback(async () => {
     if (!SYNC_URL) return alert("Chưa cấu hình VITE_SYNC_URL");
     try {
       const r = await fetch(
@@ -694,14 +712,14 @@ export default function App() {
         { headers: { "x-user-id": USER_ID } }
       );
       const { url } = await r.json();
-      if (url)
-        window.open(url, "_blank", "width=520,height=640");
+      if (url) window.open(url, "_blank", "width=520,height=640");
       else alert("Không lấy được URL liên kết");
     } catch {
       alert("Không thể kết nối Google Drive");
     }
-  };
-  const resetDrive = async () => {
+  }, []);
+
+  const resetDrive = useCallback(async () => {
     if (!SYNC_URL) return alert("Chưa cấu hình VITE_SYNC_URL");
     if (!confirm("Ngắt liên kết Google Drive cho tài khoản này?")) return;
     try {
@@ -716,8 +734,9 @@ export default function App() {
     } catch {
       alert("Không thể ngắt liên kết (mạng/server).");
     }
-  };
-  const loadFromDrive = async () => {
+  }, []);
+
+  const loadFromDrive = useCallback(async () => {
     try {
       const r = await fetch(`${SYNC_URL}/api/drive/load`, {
         headers: { "x-user-id": USER_ID },
@@ -736,8 +755,9 @@ export default function App() {
     } catch {
       alert("Không thể đồng bộ từ Drive.");
     }
-  };
-  const saveToDrive = async () => {
+  }, []);
+
+  const saveToDrive = useCallback(async () => {
     try {
       const r = await fetch(`${SYNC_URL}/api/drive/save`, {
         method: "POST",
@@ -760,9 +780,7 @@ export default function App() {
           setVersion(remote.version || 0);
           setEtag(remote.etag || null);
         }
-        return alert(
-          "Dữ liệu trên Drive đã thay đổi. Đã tải lại, lưu lại lần nữa."
-        );
+        return alert("Dữ liệu trên Drive đã thay đổi. Đã tải lại, lưu lại lần nữa.");
       }
       if (!r.ok) return alert(`Lỗi lưu lên Drive (${r.status})`);
       const tag = r.headers.get("ETag") || null;
@@ -772,7 +790,7 @@ export default function App() {
     } catch {
       alert("Không thể lưu lên Drive.");
     }
-  };
+  }, [etag, members, txs]);
 
   /* UI */
   const [tab, setTab] = useState("tx"); // tx | members | summary | charts | settings
@@ -929,8 +947,8 @@ export default function App() {
           SYNC_PULL_MS={SYNC_PULL_MS}
         />
       </div>
-{/* Bottom Mobile Nav */}
-<BottomNav tab={tab} setTab={setTab} />
+      {/* Bottom Mobile Nav */}
+      <BottomNav tab={tab} setTab={setTab} />
 
       <footer className="py-10 text-center text-xs text-slate-500">
         © {new Date().getFullYear()} MoneyTracker · User: {USER_ID}
@@ -1630,43 +1648,42 @@ function BarList({ title, data, color }) {
 
 function BottomNav({ tab, setTab }) {
   const items = [
-  { key: "tx",       label: "Lịch sử",    icon: <i className="fa-solid fa-receipt" aria-hidden="true"></i> },
-  { key: "members",  label: "Thành viên", icon: <i className="fa-solid fa-users" aria-hidden="true"></i> },
-  { key: "summary",  label: "Tổng kết",   icon: <i className="fa-solid fa-circle-check" aria-hidden="true"></i> },
-  { key: "charts",   label: "Charts",     icon: <i className="fa-solid fa-chart-bar" aria-hidden="true"></i> },
-  { key: "settings", label: "Cài đặt",    icon: <i className="fa-solid fa-gear" aria-hidden="true"></i> },
-];
+    { key: "tx",       label: "Lịch sử",    icon: <i className="fa-solid fa-receipt" aria-hidden="true"></i> },
+    { key: "members",  label: "Thành viên", icon: <i className="fa-solid fa-users" aria-hidden="true"></i> },
+    { key: "summary",  label: "Tổng kết",   icon: <i className="fa-solid fa-circle-check" aria-hidden="true"></i> },
+    { key: "charts",   label: "Charts",     icon: <i className="fa-solid fa-chart-bar" aria-hidden="true"></i> },
+    { key: "settings", label: "Cài đặt",    icon: <i className="fa-solid fa-gear" aria-hidden="true"></i> },
+  ];
   const idx = Math.max(0, items.findIndex((i) => i.key === tab));
   const widthPct = 100 / items.length;
   const leftPct = idx * widthPct;
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-slate-800 bg-slate-950/95 backdrop-blur sm:hidden">
-  <div className="relative max-w-7xl mx-auto">
-    <div
-      className="absolute bottom-0 h-0.5 bg-indigo-400 transition-all duration-300 ease-out"
-      style={{ width: `${widthPct}%`, left: `${leftPct}%` }}
-    />
-    <div className="grid" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
-      {items.map((it) => {
-        const active = tab === it.key;
-        return (
-          <button
-            key={it.key}
-            onClick={() => setTab(it.key)}
-            className={`py-2.5 text-xs flex flex-col items-center gap-1 transition-all duration-200 ${
-              active ? "text-indigo-300 scale-105" : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            {/* icon FA7 */}
-            <span className="text-base leading-none">{it.icon}</span>
-            <span>{it.label}</span>
-          </button>
-        );
-      })}
-    </div>
-  </div>
-</nav>
-
+      <div className="relative max-w-7xl mx-auto">
+        <div
+          className="absolute bottom-0 h-0.5 bg-indigo-400 transition-all duration-300 ease-out"
+          style={{ width: `${widthPct}%`, left: `${leftPct}%` }}
+        />
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+          {items.map((it) => {
+            const active = tab === it.key;
+            return (
+              <button
+                key={it.key}
+                onClick={() => setTab(it.key)}
+                className={`py-2.5 text-xs flex flex-col items-center gap-1 transition-all duration-200 ${
+                  active ? "text-indigo-300 scale-105" : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {/* icon FA */}
+                <span className="text-base leading-none">{it.icon}</span>
+                <span>{it.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </nav>
   );
 }
