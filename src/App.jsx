@@ -989,34 +989,55 @@ function App() {
           },
         }}
       />
-      {/* Header */}
-      <div className="sticky top-0 z-20 bg-slate-950/80 border-b border-slate-800/80 backdrop-blur-lg shadow-lg shadow-black/20">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-400 grid place-items-center font-extrabold shadow-lg shadow-indigo-900/50 text-lg">
-              ₫
-            </div>
-            <div className="leading-tight">
-              <div className="font-bold tracking-tight text-lg bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">MoneyTracker</div>
-              <div className="text-xs text-slate-400 font-medium">
-                Chia tiền nhóm · VND integer
+      {/* Header - Redesigned */}
+      <div className="sticky top-0 z-30 bg-gradient-to-r from-slate-950/95 via-slate-900/95 to-slate-950/95 border-b border-indigo-500/20 backdrop-blur-2xl shadow-2xl">
+        {/* Decorative line */}
+        <div className="h-0.5 bg-gradient-to-r from-transparent via-indigo-500 to-transparent"></div>
+
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5">
+          <div className="flex items-center justify-between">
+            {/* Logo & Title */}
+            <div className="flex items-center gap-4 group">
+              <div className="relative">
+                {/* Animated ring */}
+                <div className="absolute inset-0 rounded-3xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-500 opacity-75 blur-lg group-hover:opacity-100 transition-opacity duration-500 animate-pulse"></div>
+                <div className="relative h-14 w-14 rounded-3xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-500 grid place-items-center shadow-2xl shadow-indigo-500/50 group-hover:scale-110 transition-transform duration-300">
+                  <span className="text-2xl font-black text-white drop-shadow-lg">₫</span>
+                </div>
+              </div>
+
+              <div className="leading-tight">
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-black tracking-tighter bg-gradient-to-r from-indigo-400 via-purple-400 to-cyan-400 bg-clip-text text-transparent drop-shadow-lg">
+                    MoneyTracker
+                  </h1>
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-gradient-to-r from-indigo-500/20 to-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                    PRO
+                  </span>
+                </div>
+                <div className="text-xs text-slate-400 font-semibold tracking-wide flex items-center gap-2 mt-1">
+                  <svg className="w-3 h-3 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                  </svg>
+                  <span>Smart Group Expense Manager</span>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="hidden sm:flex items-center gap-2">
-            <div className="flex items-center gap-2">
-              <span
-                className={`px-2 py-1 rounded-lg text-xs border flex items-center gap-1.5 ${
+            {/* Sync Status & Actions */}
+            <div className="hidden lg:flex items-center gap-3">
+              {/* Sync Status Badge */}
+              <div
+                className={`relative px-4 py-2 rounded-2xl flex items-center gap-2 backdrop-blur-xl transition-all duration-300 ${
                   syncStatus === "syncing"
-                    ? "border-blue-400 text-blue-300"
+                    ? "bg-blue-500/10 border border-blue-400/30 shadow-lg shadow-blue-500/20"
                     : syncStatus === "success"
-                    ? "border-emerald-400 text-emerald-300"
+                    ? "bg-emerald-500/10 border border-emerald-400/30 shadow-lg shadow-emerald-500/20"
                     : syncStatus === "error"
-                    ? "border-red-400 text-red-300"
+                    ? "bg-red-500/10 border border-red-400/30 shadow-lg shadow-red-500/20"
                     : SYNC_URL
-                    ? "border-emerald-400 text-emerald-300"
-                    : "border-slate-700 text-slate-400"
+                    ? "bg-emerald-500/10 border border-emerald-400/30"
+                    : "bg-slate-800/50 border border-slate-700/50"
                 }`}
                 title={
                   syncStatus === "syncing"
@@ -1026,23 +1047,35 @@ function App() {
                     : syncStatus === "error"
                     ? "Lỗi đồng bộ"
                     : SYNC_URL
-                    ? `Realtime ON (SSE) · Poll ${SYNC_PULL_MS}ms`
+                    ? `Realtime ON · Poll ${SYNC_PULL_MS}ms`
                     : "Sync OFF"
                 }
               >
-                {syncStatus === "syncing" && (
-                  <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                {syncStatus === "syncing" ? (
+                  <svg className="animate-spin h-4 w-4 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
+                ) : SYNC_URL ? (
+                  <div className="relative">
+                    <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+                    <div className="absolute inset-0 w-2 h-2 rounded-full bg-emerald-400 animate-ping"></div>
+                  </div>
+                ) : (
+                  <div className="w-2 h-2 rounded-full bg-slate-500"></div>
                 )}
-                {syncStatus === "syncing"
-                  ? "Đang sync..."
-                  : SYNC_URL
-                  ? "Realtime ON"
-                  : "Sync OFF"}
-              </span>
-            </div>
+                <span className={`text-xs font-bold ${
+                  syncStatus === "syncing" ? "text-blue-300" :
+                  syncStatus === "success" ? "text-emerald-300" :
+                  syncStatus === "error" ? "text-red-300" :
+                  SYNC_URL ? "text-emerald-300" : "text-slate-400"
+                }`}>
+                  {syncStatus === "syncing" ? "Syncing..." : SYNC_URL ? "Live" : "Offline"}
+                </span>
+              </div>
+
+              {/* Quick Actions */}
+              <div className="flex items-center gap-2">
             <Button
               variant="ghost"
               onClick={connectDrive}
@@ -1078,18 +1111,8 @@ function App() {
             <Button variant="subtle" onClick={downloadJSON} title="Tải file .json dự phòng">
               Sao lưu
             </Button>
-            <label className="inline-flex items-center rounded-xl px-3 py-2 text-sm cursor-pointer border bg-slate-900/70 border-slate-700">
-              Import JSON
-              <input
-                type="file"
-                accept="application/json"
-                onChange={importJSON}
-                className="hidden"
-              />
-            </label>
-            <Button variant="ghost" onClick={exportCSV} title="Xuất CSV">
-              Export CSV
-            </Button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
