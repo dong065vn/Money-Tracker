@@ -702,18 +702,37 @@ function App() {
     }
 
     setTxs((arr) => [tx, ...arr]);
+
+    // Show success message
+    toast.success("Đã thêm giao dịch!");
+
+    // Reset only total and note - keep payer, participants, and mode for convenience
     setTotalDraft("");
-    setModeDraft("equal");
-    setWeightsDraft({});
-    setSharesDraft({});
     setNoteDraft("");
-    setParticipantsDraft(members.map((m) => m.id));
+    // Only reset weights/shares if mode changes
+    if (modeDraft === "weights") setWeightsDraft({});
+    if (modeDraft === "explicit") setSharesDraft({});
+    // Keep: payerDraft, participantsDraft, modeDraft
   }, [totalDraft, participantsDraft, members, payerDraft, modeDraft, noteDraft, weightsDraft, sharesDraft]);
 
   const removeTx = useCallback(async (id) => {
     const confirmed = await confirmAction("Xóa giao dịch này?");
-    if (confirmed) setTxs((arr) => arr.filter((t) => t.id !== id));
+    if (confirmed) {
+      setTxs((arr) => arr.filter((t) => t.id !== id));
+      toast.success("Đã xóa giao dịch!");
+    }
   }, []);
+
+  const resetForm = useCallback(() => {
+    setPayerDraft(members[0]?.id || 0);
+    setTotalDraft("");
+    setNoteDraft("");
+    setModeDraft("equal");
+    setWeightsDraft({});
+    setSharesDraft({});
+    setParticipantsDraft(members.map((m) => m.id));
+    toast.success("Đã reset form!");
+  }, [members]);
 
   const togglePaid = useCallback((txId, memberId) => {
     setTxs((prev) =>
@@ -1090,6 +1109,7 @@ function App() {
           noteDraft={noteDraft}
           setNoteDraft={setNoteDraft}
           addTransaction={addTransaction}
+          resetForm={resetForm}
         />
 
         {/* RIGHT: Tabs */}
@@ -1169,6 +1189,7 @@ function LeftPane(props) {
     noteDraft,
     setNoteDraft,
     addTransaction,
+    resetForm,
   } = props;
 
   return (
@@ -1275,7 +1296,15 @@ function LeftPane(props) {
             onChange={(e) => setNoteDraft(e.target.value)}
             placeholder="VD: BBQ tối T6"
           />
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              variant="ghost"
+              onClick={resetForm}
+              title="Xóa toàn bộ form và bắt đầu lại"
+              className="text-xs"
+            >
+              Reset Form
+            </Button>
             <Button onClick={addTransaction} title="Thêm giao dịch mới">
               Thêm giao dịch
             </Button>
