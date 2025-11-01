@@ -317,7 +317,7 @@ function Input({ label, value, onChange, placeholder, type = "text" }) {
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className="w-full px-3 py-2.5 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 transition-all duration-200 hover:border-slate-600"
+        className="w-full px-3 py-2.5 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-400/70 transition-all duration-200 hover:border-slate-600"
       />
     </label>
   );
@@ -329,7 +329,7 @@ function Select({ label, value, onChange, children }) {
       <select
         value={value}
         onChange={onChange}
-        className="w-full px-3 py-2.5 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 transition-all duration-200 hover:border-slate-600 cursor-pointer"
+        className="w-full px-3 py-2.5 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-400/70 transition-all duration-200 hover:border-slate-600 cursor-pointer"
       >
         {children}
       </select>
@@ -339,7 +339,7 @@ function Select({ label, value, onChange, children }) {
 function Card({ title, action, children }) {
   return (
     <section className="group rounded-3xl border border-slate-700/50 bg-gradient-to-br from-slate-900/40 via-slate-900/30 to-slate-800/40 shadow-2xl shadow-black/40 backdrop-blur-xl transition-all duration-300 hover:shadow-indigo-500/10 hover:shadow-3xl hover:border-indigo-500/30 hover:scale-[1.01]">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700/40 bg-gradient-to-r from-slate-800/40 to-slate-900/40">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700/40 bg-gradient-to-r from-slate-800/40 to-slate-900/40 rounded-t-3xl">
         <h2 className="text-sm font-bold text-transparent bg-clip-text bg-gradient-to-r from-slate-100 to-slate-300 tracking-tight flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-gradient-to-r from-indigo-400 to-cyan-400 group-hover:scale-150 transition-transform duration-300"></span>
           {title}
