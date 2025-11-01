@@ -1,5 +1,6 @@
 // src/App.jsx
 import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import toast, { Toaster } from "react-hot-toast";
 
 /* ===== ENV & SYNC ===== */
 const SYNC_URL = import.meta.env.VITE_SYNC_URL;
@@ -30,6 +31,37 @@ const toVND = (n) =>
 // save khi rảnh (khỏi block UI)
 const idle = (fn) =>
   (window.requestIdleCallback ? window.requestIdleCallback(fn) : setTimeout(fn, 0));
+
+// Confirmation dialog helper
+const confirmAction = (message) => {
+  return new Promise((resolve) => {
+    toast((t) => (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm">{message}</p>
+        <div className="flex gap-2 justify-end">
+          <button
+            className="px-3 py-1.5 text-xs rounded-lg bg-slate-700 hover:bg-slate-600 transition-colors"
+            onClick={() => {
+              toast.dismiss(t.id);
+              resolve(false);
+            }}
+          >
+            Hủy
+          </button>
+          <button
+            className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 transition-colors"
+            onClick={() => {
+              toast.dismiss(t.id);
+              resolve(true);
+            }}
+          >
+            Xác nhận
+          </button>
+        </div>
+      </div>
+    ), { duration: Infinity });
+  });
+};
 
 /* ===== Split & Balance (Upgraded) ===== */
 
@@ -198,6 +230,49 @@ async function pushRemote(state, etag) {
   return { ...data, etag: newEtag };
 }
 
+/* ===== Error Boundary ===== */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Error caught by boundary:', error, errorInfo);
+    toast.error('Đã xảy ra lỗi! Vui lòng tải lại trang.');
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-slate-900 rounded-2xl border border-slate-700 p-8 text-center">
+            <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-red-900/30 flex items-center justify-center">
+              <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold mb-2">Oops! Đã có lỗi xảy ra</h2>
+            <p className="text-slate-400 mb-6">Ứng dụng gặp sự cố không mong muốn.</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="inline-flex items-center justify-center px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-xl text-sm font-medium transition-colors"
+            >
+              Tải lại trang
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 /* ===== UI atoms ===== */
 function Button({
   children,
@@ -209,16 +284,16 @@ function Button({
   disabled = false,
 }) {
   const base =
-    "inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
+    "inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transform active:scale-95 shadow-sm";
   const map = {
     primary:
-      "bg-indigo-600 hover:bg-indigo-700 text-white focus:ring-indigo-300 focus:ring-offset-slate-900",
+      "bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white focus:ring-indigo-300 focus:ring-offset-slate-900 shadow-indigo-900/50",
     ghost:
-      "bg-transparent border border-slate-700 hover:bg-slate-800/60 text-slate-100 focus:ring-cyan-300 focus:ring-offset-slate-900",
+      "bg-transparent border border-slate-700 hover:bg-slate-800/80 hover:border-slate-600 text-slate-100 focus:ring-cyan-300 focus:ring-offset-slate-900",
     danger:
-      "bg-rose-600 hover:bg-rose-700 text-white focus:ring-rose-300 focus:ring-offset-slate-900",
+      "bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800 text-white focus:ring-rose-300 focus:ring-offset-slate-900 shadow-rose-900/50",
     subtle:
-      "bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700/60 focus:ring-cyan-300 focus:ring-offset-slate-900",
+      "bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 hover:border-slate-600 focus:ring-cyan-300 focus:ring-offset-slate-900",
   };
   return (
     <button
@@ -236,13 +311,13 @@ function Button({
 function Input({ label, value, onChange, placeholder, type = "text" }) {
   return (
     <label className="space-y-1.5 block">
-      <span className="text-xs text-slate-300">{label}</span>
+      <span className="text-xs font-medium text-slate-300">{label}</span>
       <input
         type={type}
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className="w-full px-3 py-2 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-300"
+        className="w-full px-3 py-2.5 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 transition-all duration-200 hover:border-slate-600"
       />
     </label>
   );
@@ -250,11 +325,11 @@ function Input({ label, value, onChange, placeholder, type = "text" }) {
 function Select({ label, value, onChange, children }) {
   return (
     <label className="space-y-1.5 block">
-      <span className="text-xs text-slate-300">{label}</span>
+      <span className="text-xs font-medium text-slate-300">{label}</span>
       <select
         value={value}
         onChange={onChange}
-        className="w-full px-3 py-2 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-300"
+        className="w-full px-3 py-2.5 text-sm rounded-xl bg-slate-900/70 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 transition-all duration-200 hover:border-slate-600 cursor-pointer"
       >
         {children}
       </select>
@@ -263,18 +338,18 @@ function Select({ label, value, onChange, children }) {
 }
 function Card({ title, action, children }) {
   return (
-    <section className="rounded-2xl border border-slate-700 bg-slate-900/60 shadow-lg shadow-black/20">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/60">
-        <h2 className="text-sm font-semibold text-slate-100">{title}</h2>
+    <section className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/70 to-slate-900/50 shadow-xl shadow-black/30 backdrop-blur-sm transition-all duration-200 hover:shadow-2xl hover:border-slate-600/80">
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-700/60 bg-slate-800/30">
+        <h2 className="text-sm font-bold text-slate-100 tracking-tight">{title}</h2>
         {action}
       </div>
-      <div className="p-4">{children}</div>
+      <div className="p-5">{children}</div>
     </section>
   );
 }
 
 /* ===== App ===== */
-export default function App() {
+function App() {
   const pageBg = "bg-slate-950";
   const pageText = "text-slate-100";
 
@@ -302,6 +377,10 @@ export default function App() {
   const [summarySelectedIds, setSummarySelectedIds] = useState([]); // ids của tx được chọn
   const [summaryFrom, setSummaryFrom] = useState(""); // yyyy-mm-dd
   const [summaryTo, setSummaryTo] = useState("");     // yyyy-mm-dd
+
+  /* === Loading states === */
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | success | error
 
   /* persist local (nhẹ UI) */
   useEffect(() => { idle(() => saveMembers(members)); }, [members]);
@@ -512,8 +591,9 @@ export default function App() {
     setMemberInput("");
   }, [memberInput, members]);
 
-  const removeMember = useCallback((id) => {
-    if (!confirm("Xóa thành viên này?")) return;
+  const removeMember = useCallback(async (id) => {
+    const confirmed = await confirmAction("Xóa thành viên này?");
+    if (!confirmed) return;
     const next = members.filter((m) => m.id !== id);
     setMembers(next);
     const keepIds = new Set(next.map((m) => m.id));
@@ -546,16 +626,19 @@ export default function App() {
     );
   }, [members]);
 
-  const removeUnusedMembers = useCallback(() => {
+  const removeUnusedMembers = useCallback(async () => {
     const used = new Set();
     normalizedTxs.forEach((t) => {
       used.add(t.payer);
       (t.participants || []).forEach((id) => used.add(id));
     });
     const keep = members.filter((m) => used.has(m.id));
-    if (keep.length === members.length) return alert("Không có thành viên thừa.");
-    if (confirm(`Xóa ${members.length - keep.length} thành viên không thuộc giao dịch?`))
-      setMembers(keep);
+    if (keep.length === members.length) {
+      toast.error("Không có thành viên thừa.");
+      return;
+    }
+    const confirmed = await confirmAction(`Xóa ${members.length - keep.length} thành viên không thuộc giao dịch?`);
+    if (confirmed) setMembers(keep);
   }, [members, normalizedTxs]);
 
   /* actions: transactions */
@@ -586,10 +669,18 @@ export default function App() {
     const parts = participantsDraft.filter((pid) =>
       members.some((m) => m.id === pid)
     );
-    if (!payerDraft || !members.some((m) => m.id === payerDraft))
-      return alert("Payer không hợp lệ.");
-    if (total <= 0) return alert("Total phải > 0.");
-    if (parts.length === 0) return alert("Chọn ít nhất 1 participant.");
+    if (!payerDraft || !members.some((m) => m.id === payerDraft)) {
+      toast.error("Payer không hợp lệ.");
+      return;
+    }
+    if (total <= 0) {
+      toast.error("Total phải > 0.");
+      return;
+    }
+    if (parts.length === 0) {
+      toast.error("Chọn ít nhất 1 participant.");
+      return;
+    }
 
     const tx = {
       id: (crypto?.randomUUID?.() ?? `T${Date.now()}`), // ID ổn định/ít đụng
@@ -605,7 +696,10 @@ export default function App() {
     };
     const shares = computeShares(tx);
     const sum = Object.values(shares).reduce((a, b) => a + b, 0);
-    if (sum !== total) return alert("Shares <> total. Kiểm tra lại.");
+    if (sum !== total) {
+      toast.error("Shares <> total. Kiểm tra lại.");
+      return;
+    }
 
     setTxs((arr) => [tx, ...arr]);
     setTotalDraft("");
@@ -616,9 +710,9 @@ export default function App() {
     setParticipantsDraft(members.map((m) => m.id));
   }, [totalDraft, participantsDraft, members, payerDraft, modeDraft, noteDraft, weightsDraft, sharesDraft]);
 
-  const removeTx = useCallback((id) => {
-    if (confirm("Xóa giao dịch này?"))
-      setTxs((arr) => arr.filter((t) => t.id !== id));
+  const removeTx = useCallback(async (id) => {
+    const confirmed = await confirmAction("Xóa giao dịch này?");
+    if (confirmed) setTxs((arr) => arr.filter((t) => t.id !== id));
   }, []);
 
   const togglePaid = useCallback((txId, memberId) => {
@@ -660,9 +754,9 @@ export default function App() {
         const data = JSON.parse(e.target.result);
         if (Array.isArray(data.members)) setMembers(data.members);
         if (Array.isArray(data.transactions)) setTxs(data.transactions);
-        alert("Import thành công");
+        toast.success("Import thành công!");
       } catch {
-        alert("File không hợp lệ");
+        toast.error("File không hợp lệ");
       }
     };
     r.readAsText(f);
@@ -705,59 +799,88 @@ export default function App() {
 
   /* Drive OAuth & Sync (manual) */
   const connectDrive = useCallback(async () => {
-    if (!SYNC_URL) return alert("Chưa cấu hình VITE_SYNC_URL");
+    if (!SYNC_URL) {
+      toast.error("Chưa cấu hình VITE_SYNC_URL");
+      return;
+    }
     try {
       const r = await fetch(
         `${SYNC_URL}/api/auth/url?user=${encodeURIComponent(USER_ID)}`,
         { headers: { "x-user-id": USER_ID } }
       );
       const { url } = await r.json();
-      if (url) window.open(url, "_blank", "width=520,height=640");
-      else alert("Không lấy được URL liên kết");
+      if (url) {
+        window.open(url, "_blank", "width=520,height=640");
+        toast.success("Đã mở cửa sổ xác thực Google Drive");
+      } else {
+        toast.error("Không lấy được URL liên kết");
+      }
     } catch {
-      alert("Không thể kết nối Google Drive");
+      toast.error("Không thể kết nối Google Drive");
     }
   }, []);
 
   const resetDrive = useCallback(async () => {
-    if (!SYNC_URL) return alert("Chưa cấu hình VITE_SYNC_URL");
-    if (!confirm("Ngắt liên kết Google Drive cho tài khoản này?")) return;
+    if (!SYNC_URL) {
+      toast.error("Chưa cấu hình VITE_SYNC_URL");
+      return;
+    }
+    const confirmed = await confirmAction("Ngắt liên kết Google Drive cho tài khoản này?");
+    if (!confirmed) return;
     try {
       const r = await fetch(`${SYNC_URL}/api/auth/reset`, {
         method: "POST",
         headers: { "x-user-id": USER_ID },
       });
       const out = await r.json().catch(() => ({}));
-      if (!r.ok || out?.ok === false)
-        return alert("Không thể ngắt liên kết: " + (out?.error || `(${r.status})`));
-      alert("Đã ngắt liên kết. Bấm 'Kết nối Google Drive' để cấp lại quyền.");
+      if (!r.ok || out?.ok === false) {
+        toast.error("Không thể ngắt liên kết: " + (out?.error || `(${r.status})`));
+        return;
+      }
+      toast.success("Đã ngắt liên kết. Bấm 'Kết nối Google Drive' để cấp lại quyền.");
     } catch {
-      alert("Không thể ngắt liên kết (mạng/server).");
+      toast.error("Không thể ngắt liên kết (mạng/server).");
     }
   }, []);
 
   const loadFromDrive = useCallback(async () => {
+    setIsSyncing(true);
+    setSyncStatus("syncing");
     try {
       const r = await fetch(`${SYNC_URL}/api/drive/load`, {
         headers: { "x-user-id": USER_ID },
       });
       const out = await r.json().catch(() => ({}));
-      if (r.status === 401 || out?.ok === false)
-        return alert("Chưa liên kết Google Drive.");
-      if (!r.ok) return alert(`Lỗi tải từ Drive (${r.status})`);
+      if (r.status === 401 || out?.ok === false) {
+        toast.error("Chưa liên kết Google Drive.");
+        setSyncStatus("error");
+        return;
+      }
+      if (!r.ok) {
+        toast.error(`Lỗi tải từ Drive (${r.status})`);
+        setSyncStatus("error");
+        return;
+      }
       const tag = r.headers.get("ETag") || null;
       const st = out.state || {};
       setMembers(st.members ?? []);
       setTxs(st.transactions ?? []);
       setVersion(out.version || 0);
       setEtag(tag);
-      alert("Đã đồng bộ từ Google Drive.");
+      toast.success("Đã đồng bộ từ Google Drive!");
+      setSyncStatus("success");
     } catch {
-      alert("Không thể đồng bộ từ Drive.");
+      toast.error("Không thể đồng bộ từ Drive.");
+      setSyncStatus("error");
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncStatus("idle"), 2000);
     }
   }, []);
 
   const saveToDrive = useCallback(async () => {
+    setIsSyncing(true);
+    setSyncStatus("syncing");
     try {
       const r = await fetch(`${SYNC_URL}/api/drive/save`, {
         method: "POST",
@@ -770,8 +893,11 @@ export default function App() {
         body: JSON.stringify({ state: { members, transactions: txs } }),
       });
       const out = await r.json().catch(() => ({}));
-      if (r.status === 401 || out?.ok === false)
-        return alert("Chưa liên kết Drive.");
+      if (r.status === 401 || out?.ok === false) {
+        toast.error("Chưa liên kết Drive.");
+        setSyncStatus("error");
+        return;
+      }
       if (r.status === 409) {
         const remote = await pullRemote();
         if (remote?.state) {
@@ -780,15 +906,26 @@ export default function App() {
           setVersion(remote.version || 0);
           setEtag(remote.etag || null);
         }
-        return alert("Dữ liệu trên Drive đã thay đổi. Đã tải lại, lưu lại lần nữa.");
+        toast.warning("Dữ liệu trên Drive đã thay đổi. Đã tải lại, lưu lại lần nữa.");
+        setSyncStatus("error");
+        return;
       }
-      if (!r.ok) return alert(`Lỗi lưu lên Drive (${r.status})`);
+      if (!r.ok) {
+        toast.error(`Lỗi lưu lên Drive (${r.status})`);
+        setSyncStatus("error");
+        return;
+      }
       const tag = r.headers.get("ETag") || null;
       if (typeof out.version === "number") setVersion(out.version);
       if (tag) setEtag(tag);
-      alert("Đã lưu lên Google Drive.");
+      toast.success("Đã lưu lên Google Drive!");
+      setSyncStatus("success");
     } catch {
-      alert("Không thể lưu lên Drive.");
+      toast.error("Không thể lưu lên Drive.");
+      setSyncStatus("error");
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncStatus("idle"), 2000);
     }
   }, [etag, members, txs]);
 
@@ -797,36 +934,84 @@ export default function App() {
 
   return (
     <div className={`min-h-screen pb-28 ${pageBg} ${pageText} font-[Inter]`}>
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 3000,
+          style: {
+            background: '#1e293b',
+            color: '#f1f5f9',
+            border: '1px solid #334155',
+            borderRadius: '12px',
+          },
+          success: {
+            iconTheme: {
+              primary: '#10b981',
+              secondary: '#f1f5f9',
+            },
+          },
+          error: {
+            iconTheme: {
+              primary: '#ef4444',
+              secondary: '#f1f5f9',
+            },
+          },
+        }}
+      />
       {/* Header */}
-      <div className="sticky top-0 z-20 bg-slate-950/70 border-b border-slate-800 backdrop-blur">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+      <div className="sticky top-0 z-20 bg-slate-950/80 border-b border-slate-800/80 backdrop-blur-lg shadow-lg shadow-black/20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-2xl bg-gradient-to-tr from-indigo-600 to-cyan-400 grid place-items-center font-extrabold">
+            <div className="h-10 w-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-400 grid place-items-center font-extrabold shadow-lg shadow-indigo-900/50 text-lg">
               ₫
             </div>
             <div className="leading-tight">
-              <div className="font-semibold tracking-tight">MoneyTracker</div>
-              <div className="text-xs text-slate-400">
+              <div className="font-bold tracking-tight text-lg bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">MoneyTracker</div>
+              <div className="text-xs text-slate-400 font-medium">
                 Chia tiền nhóm · VND integer
               </div>
             </div>
           </div>
 
           <div className="hidden sm:flex items-center gap-2">
-            <span
-              className={`px-2 py-1 rounded-lg text-xs border ${
-                SYNC_URL
-                  ? "border-emerald-400 text-emerald-300"
-                  : "border-slate-700 text-slate-400"
-              }`}
-              title={
-                SYNC_URL
-                  ? `Realtime ON (SSE) · Poll ${SYNC_PULL_MS}ms`
-                  : "Sync OFF"
-              }
-            >
-              {SYNC_URL ? "Realtime ON" : "Sync OFF"}
-            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className={`px-2 py-1 rounded-lg text-xs border flex items-center gap-1.5 ${
+                  syncStatus === "syncing"
+                    ? "border-blue-400 text-blue-300"
+                    : syncStatus === "success"
+                    ? "border-emerald-400 text-emerald-300"
+                    : syncStatus === "error"
+                    ? "border-red-400 text-red-300"
+                    : SYNC_URL
+                    ? "border-emerald-400 text-emerald-300"
+                    : "border-slate-700 text-slate-400"
+                }`}
+                title={
+                  syncStatus === "syncing"
+                    ? "Đang đồng bộ..."
+                    : syncStatus === "success"
+                    ? "Đồng bộ thành công"
+                    : syncStatus === "error"
+                    ? "Lỗi đồng bộ"
+                    : SYNC_URL
+                    ? `Realtime ON (SSE) · Poll ${SYNC_PULL_MS}ms`
+                    : "Sync OFF"
+                }
+              >
+                {syncStatus === "syncing" && (
+                  <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                )}
+                {syncStatus === "syncing"
+                  ? "Đang sync..."
+                  : SYNC_URL
+                  ? "Realtime ON"
+                  : "Sync OFF"}
+              </span>
+            </div>
             <Button
               variant="ghost"
               onClick={connectDrive}
@@ -838,18 +1023,18 @@ export default function App() {
             <Button
               variant="ghost"
               onClick={loadFromDrive}
-              disabled={!SYNC_URL}
+              disabled={!SYNC_URL || isSyncing}
               title="Nạp dữ liệu đã lưu trên Drive"
             >
-              Đồng bộ từ Drive
+              {isSyncing ? "Đang tải..." : "Đồng bộ từ Drive"}
             </Button>
             <Button
               variant="ghost"
               onClick={saveToDrive}
-              disabled={!SYNC_URL}
+              disabled={!SYNC_URL || isSyncing}
               title="Ghi dữ liệu hiện tại lên Drive"
             >
-              Lưu lên Drive
+              {isSyncing ? "Đang lưu..." : "Lưu lên Drive"}
             </Button>
             <Button
               variant="ghost"
@@ -913,6 +1098,7 @@ export default function App() {
           setTab={setTab}
           txs={txs}
           setTxs={setTxs}
+          setMembers={setMembers}
           normalizedTxs={normalizedTxs}
           idToName={idToName}
           removeTx={removeTx}
@@ -1150,6 +1336,7 @@ function RightPane(props) {
     setTab,
     txs,
     setTxs,
+    setMembers,
     normalizedTxs,
     idToName,
     removeTx,
@@ -1157,7 +1344,6 @@ function RightPane(props) {
     computeShares,
     balancesList,
     totalCheck,
-    transfers,
     spentByPayer,
     // summary props
     summaryOnlySelected,
@@ -1254,8 +1440,9 @@ function RightPane(props) {
               </Button>
               <Button
                 variant="danger"
-                onClick={() => {
-                  if (confirm("Xóa tất cả giao dịch?")) setTxs([]);
+                onClick={async () => {
+                  const confirmed = await confirmAction("Xóa tất cả giao dịch?");
+                  if (confirmed) setTxs([]);
                 }}
               >
                 Xóa hết
@@ -1599,10 +1786,12 @@ function RightPane(props) {
             </Button>
             <Button
               variant="danger"
-              onClick={() => {
-                if (confirm("Xóa toàn bộ dữ liệu local?")) {
+              onClick={async () => {
+                const confirmed = await confirmAction("Xóa toàn bộ dữ liệu local?");
+                if (confirmed) {
                   setTxs([]);
                   setMembers([]);
+                  toast.success("Đã xóa toàn bộ dữ liệu local");
                 }
               }}
               title="Chỉ xoá local – không ảnh hưởng dữ liệu Drive"
@@ -1687,3 +1876,15 @@ function BottomNav({ tab, setTab }) {
     </nav>
   );
 }
+
+// Wrap App with ErrorBoundary
+function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+
+export { ErrorBoundary };
+export default AppWithErrorBoundary;
