@@ -234,36 +234,185 @@ async function pushRemote(state, etag) {
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = {
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      errorId: null,
+      timestamp: null,
+      showDetails: false,
+      copied: false
+    };
   }
 
   static getDerivedStateFromError(error) {
-    return { hasError: true, error };
+    // Generate unique error ID for tracking
+    const errorId = `ERR-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+    const timestamp = new Date().toLocaleString('vi-VN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+
+    return {
+      hasError: true,
+      error,
+      errorId,
+      timestamp
+    };
   }
 
   componentDidCatch(error, errorInfo) {
-    console.error('Error caught by boundary:', error, errorInfo);
+    // Log error with details for debugging
+    console.error('Error caught by boundary:', {
+      errorId: this.state.errorId,
+      timestamp: this.state.timestamp,
+      error,
+      errorInfo
+    });
+
+    // Store errorInfo in state for display
+    this.setState({ errorInfo });
+
+    // Show toast notification
     toast.error('Đã xảy ra lỗi! Vui lòng tải lại trang.');
+
+    // TODO: Send error to tracking service (Sentry, LogRocket, etc.)
+    // Example: logErrorToService(this.state.errorId, error, errorInfo);
+  }
+
+  handleRetry = () => {
+    // Reset error state to retry rendering
+    this.setState({
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      showDetails: false,
+      copied: false
+    });
+  }
+
+  handleCopyError = () => {
+    const errorDetails = `
+Error ID: ${this.state.errorId}
+Timestamp: ${this.state.timestamp}
+Error Message: ${this.state.error?.message || 'Unknown error'}
+Error Stack: ${this.state.error?.stack || 'No stack trace available'}
+Component Stack: ${this.state.errorInfo?.componentStack || 'No component stack available'}
+User Agent: ${navigator.userAgent}
+URL: ${window.location.href}
+    `.trim();
+
+    navigator.clipboard.writeText(errorDetails).then(() => {
+      this.setState({ copied: true });
+      toast.success('Đã copy thông tin lỗi!');
+      setTimeout(() => this.setState({ copied: false }), 2000);
+    }).catch(() => {
+      toast.error('Không thể copy. Vui lòng copy thủ công.');
+    });
   }
 
   render() {
     if (this.state.hasError) {
+      const { error, errorId, timestamp, showDetails, copied } = this.state;
+
       return (
         <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-slate-900 rounded-2xl border border-slate-700 p-8 text-center">
-            <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-red-900/30 flex items-center justify-center">
-              <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
+          <div className="max-w-2xl w-full bg-slate-900 rounded-2xl border border-slate-700 p-8">
+            {/* Icon and Title */}
+            <div className="text-center mb-6">
+              <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-red-900/30 flex items-center justify-center">
+                <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold mb-2">Rất tiếc, ứng dụng đã gặp sự cố</h2>
+              <p className="text-slate-400">
+                Vui lòng tải lại trang để tiếp tục. Nếu lỗi lặp lại, hãy liên hệ hỗ trợ và cung cấp mã lỗi bên dưới.
+              </p>
             </div>
-            <h2 className="text-xl font-bold mb-2">Oops! Đã có lỗi xảy ra</h2>
-            <p className="text-slate-400 mb-6">Ứng dụng gặp sự cố không mong muốn.</p>
+
+            {/* Error ID and Timestamp */}
+            <div className="bg-slate-800/50 rounded-lg p-4 mb-4 space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-400">Mã lỗi:</span>
+                <code className="text-red-400 font-mono font-semibold">{errorId}</code>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-400">Thời gian:</span>
+                <span className="text-slate-300">{timestamp}</span>
+              </div>
+              {error?.message && (
+                <div className="text-sm pt-2 border-t border-slate-700">
+                  <span className="text-slate-400 block mb-1">Chi tiết:</span>
+                  <code className="text-orange-400 text-xs break-all">{error.message}</code>
+                </div>
+              )}
+            </div>
+
+            {/* Toggle Details Button */}
             <button
-              onClick={() => window.location.reload()}
-              className="inline-flex items-center justify-center px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-xl text-sm font-medium transition-colors"
+              onClick={() => this.setState({ showDetails: !showDetails })}
+              className="w-full mb-4 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300 transition-colors flex items-center justify-between"
             >
-              Tải lại trang
+              <span>{showDetails ? 'Ẩn' : 'Hiển thị'} thông tin kỹ thuật</span>
+              <svg
+                className={`h-5 w-5 transition-transform ${showDetails ? 'rotate-180' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
             </button>
+
+            {/* Technical Details (Collapsible) */}
+            {showDetails && (
+              <div className="bg-slate-950 rounded-lg p-4 mb-4 max-h-60 overflow-y-auto">
+                <p className="text-xs font-mono text-slate-400 whitespace-pre-wrap break-all">
+                  {error?.stack || 'No stack trace available'}
+                </p>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex gap-3">
+              <button
+                onClick={this.handleRetry}
+                className="flex-1 inline-flex items-center justify-center px-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-xl text-sm font-medium transition-colors"
+              >
+                <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Thử lại
+              </button>
+              <button
+                onClick={this.handleCopyError}
+                className="flex-1 inline-flex items-center justify-center px-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-xl text-sm font-medium transition-colors"
+              >
+                <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={copied ? "M5 13l4 4L19 7" : "M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"} />
+                </svg>
+                {copied ? 'Đã copy!' : 'Copy lỗi'}
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="flex-1 inline-flex items-center justify-center px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-xl text-sm font-medium transition-colors"
+              >
+                <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Tải lại trang
+              </button>
+            </div>
+
+            {/* Help Text */}
+            <p className="text-xs text-slate-500 text-center mt-4">
+              Nếu vấn đề tiếp tục xảy ra, vui lòng báo cáo lỗi kèm theo mã lỗi <span className="font-mono text-red-500">{errorId}</span>
+            </p>
           </div>
         </div>
       );
