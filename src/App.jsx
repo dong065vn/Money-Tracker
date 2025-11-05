@@ -480,6 +480,31 @@ function App() {
     return () => ev.close();
   }, [version]);
 
+  /* Listen for OAuth popup messages (tránh form bị nhảy khi đăng nhập Gmail) */
+  useEffect(() => {
+    const handleMessage = async (event) => {
+      // Security: Chỉ nhận message từ popup OAuth
+      // Note: Trong production nên check event.origin
+      if (!event.data || typeof event.data !== 'object') return;
+
+      if (event.data.type === 'OAUTH_SUCCESS' && event.data.provider === 'google-drive') {
+        toast.success('🎉 Đã kết nối Google Drive thành công!');
+
+        // Tự động load dữ liệu từ Drive sau khi kết nối
+        try {
+          await loadFromDrive();
+        } catch (err) {
+          console.error('Auto-load from Drive failed:', err);
+        }
+      } else if (event.data.type === 'OAUTH_ERROR') {
+        toast.error('❌ Không thể kết nối Google Drive. Vui lòng thử lại.');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [loadFromDrive]); // dependency: loadFromDrive callback
+
   /* derived */
   const idToName = useMemo(
     () => new Map(members.map((x) => [x.id, x.name])),
@@ -833,7 +858,10 @@ function App() {
       const { url } = await r.json();
       if (url) {
         window.open(url, "_blank", "width=520,height=640");
-        toast.success("Đã mở cửa sổ xác thực Google Drive");
+        toast("🔐 Đang mở cửa sổ đăng nhập Google...", {
+          icon: '🚀',
+          duration: 3000
+        });
       } else {
         toast.error("Không lấy được URL liên kết");
       }
