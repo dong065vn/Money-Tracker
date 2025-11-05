@@ -410,7 +410,9 @@ function App() {
           setVersion(remote.version || 0);
           setEtag(remote.etag || null);
         }
-      } catch {}
+      } catch {
+        // Ignore initial load errors
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -439,7 +441,9 @@ function App() {
           setEtag(pushed.etag);
           lastPushedRef.current = json;
         }
-      } catch {}
+      } catch {
+        // Ignore save errors - will retry
+      }
     }, 400);
     return () => clearTimeout(to);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -457,7 +461,9 @@ function App() {
           setVersion(remote.version);
           setEtag(remote.etag || null);
         }
-      } catch {}
+      } catch {
+        // Ignore polling errors
+      }
     }, SYNC_PULL_MS);
     return () => clearInterval(t);
   }, [version]);
@@ -501,7 +507,9 @@ function App() {
             console.log('[SSE] No actual changes, skipping update');
           }
         }
-      } catch {}
+      } catch {
+        // Ignore SSE parsing errors
+      }
     };
     ev.onerror = () => {}; // để polling xử lý dự phòng
     return () => ev.close();
@@ -1226,7 +1234,6 @@ function App() {
           totalDraft={totalDraft}
           setTotalDraft={setTotalDraft}
           participantsDraft={participantsDraft}
-          setParticipantsDraft={setParticipantsDraft}
           modeDraft={modeDraft}
           setModeDraft={setModeDraft}
           weightsDraft={weightsDraft}
@@ -1279,6 +1286,8 @@ function App() {
           USER_ID={USER_ID}
           SYNC_URL={SYNC_URL}
           SYNC_PULL_MS={SYNC_PULL_MS}
+          lastLocalActionRef={lastLocalActionRef}
+          skipSelfUpdateRef={skipSelfUpdateRef}
         />
       </div>
       {/* Bottom Mobile Nav */}
@@ -1306,7 +1315,6 @@ function LeftPane(props) {
     totalDraft,
     setTotalDraft,
     participantsDraft,
-    setParticipantsDraft,
     modeDraft,
     setModeDraft,
     weightsDraft,
@@ -1525,6 +1533,8 @@ function RightPane(props) {
     USER_ID,
     SYNC_URL,
     SYNC_PULL_MS,
+    lastLocalActionRef,
+    skipSelfUpdateRef,
   } = props;
 
   const pad2 = (x) => String(x).padStart(2, "0");

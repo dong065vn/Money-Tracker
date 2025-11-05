@@ -22,7 +22,9 @@ try {
     VERSION = parsed.version ?? VERSION;
     ETAG = `"v${VERSION}"`;
   }
-} catch (_) {}
+} catch {
+  // Ignore file read errors
+}
 
 // ghi xuống file (đơn giản)
 function persist() {
