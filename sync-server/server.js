@@ -329,10 +329,124 @@ app.get("/api/oauth2callback", async (req, res) => {
     const { tokens } = await oauth2.getToken(code);
     saveUserToken(state, tokens);
 
-    res.status(200).send("✅ Kết nối Google Drive thành công. Bạn có thể đóng tab này.");
+    // Trả về HTML page với script để:
+    // 1. Gửi message về parent window
+    // 2. Tự động đóng popup sau 2s
+    res.status(200).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>OAuth Success</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+          }
+          .container {
+            text-align: center;
+            padding: 2rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+          }
+          .icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            animation: checkmark 0.8s ease-in-out;
+          }
+          @keyframes checkmark {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+          }
+          h1 {
+            margin: 0 0 0.5rem 0;
+            font-size: 1.5rem;
+          }
+          p {
+            margin: 0;
+            opacity: 0.9;
+            font-size: 0.9rem;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="icon">✅</div>
+          <h1>Kết nối thành công!</h1>
+          <p>Cửa sổ này sẽ tự động đóng...</p>
+        </div>
+        <script>
+          // Gửi message về parent window
+          if (window.opener) {
+            window.opener.postMessage({
+              type: 'OAUTH_SUCCESS',
+              provider: 'google-drive',
+              userId: '${state}'
+            }, '*');
+          }
+
+          // Tự động đóng sau 2 giây
+          setTimeout(() => {
+            window.close();
+          }, 2000);
+        </script>
+      </body>
+      </html>
+    `);
   } catch (e) {
     console.error(e);
-    res.status(500).send("OAuth error");
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>OAuth Error</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+          }
+          .container {
+            text-align: center;
+            padding: 2rem;
+          }
+          .icon { font-size: 4rem; margin-bottom: 1rem; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="icon">❌</div>
+          <h1>Lỗi kết nối</h1>
+          <p>Vui lòng thử lại</p>
+        </div>
+        <script>
+          if (window.opener) {
+            window.opener.postMessage({
+              type: 'OAUTH_ERROR',
+              provider: 'google-drive'
+            }, '*');
+          }
+          setTimeout(() => window.close(), 3000);
+        </script>
+      </body>
+      </html>
+    `);
   }
 });
 

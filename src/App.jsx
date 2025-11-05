@@ -375,6 +375,10 @@ function App() {
   const etagRef = useRef(etag);
   useEffect(() => { etagRef.current = etag; }, [etag]);
 
+  // ref để track user actions và tránh self-update từ SSE
+  const lastLocalActionRef = useRef(0); // timestamp của action cuối cùng
+  const skipSelfUpdateRef = useRef(false); // flag để skip SSE update ngay sau action
+
   /* === Summary (linh hoạt) state === */
   const [summaryOnlySelected, setSummaryOnlySelected] = useState(false);
   const [summarySelectedIds, setSummarySelectedIds] = useState([]); // ids của tx được chọn
@@ -468,17 +472,65 @@ function App() {
       try {
         const msg = JSON.parse(e.data);
         if (msg?.type === "update") {
+          // Skip nếu version không cao hơn
           if (typeof msg.version === "number" && msg.version <= version) return;
-          setMembers(Array.isArray(msg.state?.members) ? msg.state.members : []);
-          setTxs(Array.isArray(msg.state?.transactions) ? msg.state.transactions : []);
-          setVersion(typeof msg.version === "number" ? msg.version : 0);
-          setEtag(msg.etag || null);
+
+          // Skip self-update: Nếu user vừa thực hiện action trong vòng 2s
+          const timeSinceLastAction = Date.now() - lastLocalActionRef.current;
+          if (skipSelfUpdateRef.current && timeSinceLastAction < 2000) {
+            console.log('[SSE] Skipping self-update from recent local action');
+            skipSelfUpdateRef.current = false; // Reset flag
+            return;
+          }
+
+          // Deep comparison: Chỉ update nếu data thực sự khác
+          const newMembers = Array.isArray(msg.state?.members) ? msg.state.members : [];
+          const newTxs = Array.isArray(msg.state?.transactions) ? msg.state.transactions : [];
+          const newVersion = typeof msg.version === "number" ? msg.version : 0;
+
+          const membersChanged = JSON.stringify(members) !== JSON.stringify(newMembers);
+          const txsChanged = JSON.stringify(txs) !== JSON.stringify(newTxs);
+
+          if (membersChanged || txsChanged || newVersion > version) {
+            console.log('[SSE] Applying update from server', { membersChanged, txsChanged });
+            if (membersChanged) setMembers(newMembers);
+            if (txsChanged) setTxs(newTxs);
+            setVersion(newVersion);
+            setEtag(msg.etag || null);
+          } else {
+            console.log('[SSE] No actual changes, skipping update');
+          }
         }
       } catch {}
     };
     ev.onerror = () => {}; // để polling xử lý dự phòng
     return () => ev.close();
-  }, [version]);
+  }, [version, members, txs]);
+
+  /* Listen for OAuth popup messages (tránh form bị nhảy khi đăng nhập Gmail) */
+  useEffect(() => {
+    const handleMessage = async (event) => {
+      // Security: Chỉ nhận message từ popup OAuth
+      // Note: Trong production nên check event.origin
+      if (!event.data || typeof event.data !== 'object') return;
+
+      if (event.data.type === 'OAUTH_SUCCESS' && event.data.provider === 'google-drive') {
+        toast.success('🎉 Đã kết nối Google Drive thành công!');
+
+        // Tự động load dữ liệu từ Drive sau khi kết nối
+        try {
+          await loadFromDrive();
+        } catch (err) {
+          console.error('Auto-load from Drive failed:', err);
+        }
+      } else if (event.data.type === 'OAUTH_ERROR') {
+        toast.error('❌ Không thể kết nối Google Drive. Vui lòng thử lại.');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [loadFromDrive]); // dependency: loadFromDrive callback
 
   /* derived */
   const idToName = useMemo(
@@ -590,6 +642,11 @@ function App() {
       "#38bdf8",
     ];
     const color = colors[members.length % colors.length];
+
+    // Mark local action để skip SSE self-update
+    lastLocalActionRef.current = Date.now();
+    skipSelfUpdateRef.current = true;
+
     setMembers([...members, { id: Date.now(), name, color }]);
     setMemberInput("");
   }, [memberInput, members]);
@@ -597,6 +654,11 @@ function App() {
   const removeMember = useCallback(async (id) => {
     const confirmed = await confirmAction("Xóa thành viên này?");
     if (!confirmed) return;
+
+    // Mark local action để skip SSE self-update
+    lastLocalActionRef.current = Date.now();
+    skipSelfUpdateRef.current = true;
+
     const next = members.filter((m) => m.id !== id);
     setMembers(next);
     const keepIds = new Set(next.map((m) => m.id));
@@ -641,7 +703,13 @@ function App() {
       return;
     }
     const confirmed = await confirmAction(`Xóa ${members.length - keep.length} thành viên không thuộc giao dịch?`);
-    if (confirmed) setMembers(keep);
+    if (confirmed) {
+      // Mark local action để skip SSE self-update
+      lastLocalActionRef.current = Date.now();
+      skipSelfUpdateRef.current = true;
+
+      setMembers(keep);
+    }
   }, [members, normalizedTxs]);
 
   /* actions: transactions */
@@ -704,6 +772,10 @@ function App() {
       return;
     }
 
+    // Mark local action để skip SSE self-update
+    lastLocalActionRef.current = Date.now();
+    skipSelfUpdateRef.current = true;
+
     setTxs((arr) => [tx, ...arr]);
 
     // Show success message
@@ -721,6 +793,10 @@ function App() {
   const removeTx = useCallback(async (id) => {
     const confirmed = await confirmAction("Xóa giao dịch này?");
     if (confirmed) {
+      // Mark local action để skip SSE self-update
+      lastLocalActionRef.current = Date.now();
+      skipSelfUpdateRef.current = true;
+
       setTxs((arr) => arr.filter((t) => t.id !== id));
       toast.success("Đã xóa giao dịch!");
     }
@@ -738,6 +814,10 @@ function App() {
   }, [members]);
 
   const togglePaid = useCallback((txId, memberId) => {
+    // Mark local action để skip SSE self-update
+    lastLocalActionRef.current = Date.now();
+    skipSelfUpdateRef.current = true;
+
     setTxs((prev) =>
       prev.map((t) => {
         if (
@@ -774,6 +854,11 @@ function App() {
     r.onload = (e) => {
       try {
         const data = JSON.parse(e.target.result);
+
+        // Mark local action để skip SSE self-update
+        lastLocalActionRef.current = Date.now();
+        skipSelfUpdateRef.current = true;
+
         if (Array.isArray(data.members)) setMembers(data.members);
         if (Array.isArray(data.transactions)) setTxs(data.transactions);
         toast.success("Import thành công!");
@@ -833,7 +918,10 @@ function App() {
       const { url } = await r.json();
       if (url) {
         window.open(url, "_blank", "width=520,height=640");
-        toast.success("Đã mở cửa sổ xác thực Google Drive");
+        toast("🔐 Đang mở cửa sổ đăng nhập Google...", {
+          icon: '🚀',
+          duration: 3000
+        });
       } else {
         toast.error("Không lấy được URL liên kết");
       }
@@ -885,6 +973,11 @@ function App() {
       }
       const tag = r.headers.get("ETag") || null;
       const st = out.state || {};
+
+      // Mark local action để skip SSE self-update (vì load từ Drive)
+      lastLocalActionRef.current = Date.now();
+      skipSelfUpdateRef.current = true;
+
       setMembers(st.members ?? []);
       setTxs(st.transactions ?? []);
       setVersion(out.version || 0);
@@ -1506,7 +1599,13 @@ function RightPane(props) {
                 variant="danger"
                 onClick={async () => {
                   const confirmed = await confirmAction("Xóa tất cả giao dịch?");
-                  if (confirmed) setTxs([]);
+                  if (confirmed) {
+                    // Mark local action để skip SSE self-update
+                    lastLocalActionRef.current = Date.now();
+                    skipSelfUpdateRef.current = true;
+
+                    setTxs([]);
+                  }
                 }}
               >
                 Xóa hết
@@ -1878,6 +1977,10 @@ function RightPane(props) {
               onClick={async () => {
                 const confirmed = await confirmAction("Xóa toàn bộ dữ liệu local?");
                 if (confirmed) {
+                  // Mark local action để skip SSE self-update
+                  lastLocalActionRef.current = Date.now();
+                  skipSelfUpdateRef.current = true;
+
                   setTxs([]);
                   setMembers([]);
                   toast.success("Đã xóa toàn bộ dữ liệu local");
