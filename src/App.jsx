@@ -664,6 +664,47 @@ function App() {
     return () => ev.close();
   }, [version, members, txs]);
 
+  /* Google Drive sync functions */
+  const loadFromDrive = useCallback(async () => {
+    setIsSyncing(true);
+    setSyncStatus("syncing");
+    try {
+      const r = await fetch(`${SYNC_URL}/api/drive/load`, {
+        headers: { "x-user-id": USER_ID },
+      });
+      const out = await r.json().catch(() => ({}));
+      if (r.status === 401 || out?.ok === false) {
+        toast.error("Chưa liên kết Google Drive.");
+        setSyncStatus("error");
+        return;
+      }
+      if (!r.ok) {
+        toast.error(`Lỗi tải từ Drive (${r.status})`);
+        setSyncStatus("error");
+        return;
+      }
+      const tag = r.headers.get("ETag") || null;
+      const st = out.state || {};
+
+      // Mark local action để skip SSE self-update (vì load từ Drive)
+      lastLocalActionRef.current = Date.now();
+      skipSelfUpdateRef.current = true;
+
+      setMembers(st.members ?? []);
+      setTxs(st.transactions ?? []);
+      setVersion(out.version || 0);
+      setEtag(tag);
+      toast.success("Đã đồng bộ từ Google Drive!");
+      setSyncStatus("success");
+    } catch {
+      toast.error("Không thể đồng bộ từ Drive.");
+      setSyncStatus("error");
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncStatus("idle"), 2000);
+    }
+  }, []);
+
   /* Listen for OAuth popup messages (tránh form bị nhảy khi đăng nhập Gmail) */
   useEffect(() => {
     const handleMessage = async (event) => {
@@ -1107,46 +1148,6 @@ function App() {
       toast.success("Đã ngắt liên kết. Bấm 'Kết nối Google Drive' để cấp lại quyền.");
     } catch {
       toast.error("Không thể ngắt liên kết (mạng/server).");
-    }
-  }, []);
-
-  const loadFromDrive = useCallback(async () => {
-    setIsSyncing(true);
-    setSyncStatus("syncing");
-    try {
-      const r = await fetch(`${SYNC_URL}/api/drive/load`, {
-        headers: { "x-user-id": USER_ID },
-      });
-      const out = await r.json().catch(() => ({}));
-      if (r.status === 401 || out?.ok === false) {
-        toast.error("Chưa liên kết Google Drive.");
-        setSyncStatus("error");
-        return;
-      }
-      if (!r.ok) {
-        toast.error(`Lỗi tải từ Drive (${r.status})`);
-        setSyncStatus("error");
-        return;
-      }
-      const tag = r.headers.get("ETag") || null;
-      const st = out.state || {};
-
-      // Mark local action để skip SSE self-update (vì load từ Drive)
-      lastLocalActionRef.current = Date.now();
-      skipSelfUpdateRef.current = true;
-
-      setMembers(st.members ?? []);
-      setTxs(st.transactions ?? []);
-      setVersion(out.version || 0);
-      setEtag(tag);
-      toast.success("Đã đồng bộ từ Google Drive!");
-      setSyncStatus("success");
-    } catch {
-      toast.error("Không thể đồng bộ từ Drive.");
-      setSyncStatus("error");
-    } finally {
-      setIsSyncing(false);
-      setTimeout(() => setSyncStatus("idle"), 2000);
     }
   }, []);
 
